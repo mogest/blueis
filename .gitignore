@@ -1,0 +1,6 @@
+target/
+**/*.rs.bk
+Cargo.lock
+
+dump.rdb
+*.sqlite3
