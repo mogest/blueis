@@ -5,22 +5,19 @@ use std::io::{Write, BufReader, BufWriter};
 use std::net::{TcpStream};
 use self::resp::{Decoder};
 use self::rusqlite::Connection;
+use std::sync::{Arc, Mutex};
 use commands;
 
-pub fn handle_connection(stream: TcpStream) {
+pub fn handle_connection(stream: TcpStream, connection_mutex: Arc<Mutex<Connection>>) {
     let reader = BufReader::new(&stream);
     let mut writer = BufWriter::new(&stream);
     let mut decoder = Decoder::new(reader);
 
-    let mut connection = Connection::open("database.sqlite3").unwrap();
-    connection.execute("CREATE TABLE list_items (id integer primary key autoincrement, key string, value blob, position integer)", &[]);
-    connection.execute("CREATE INDEX list_items_key ON list_items(key, position)", &[]);
-
     loop {
         if let Ok(value) = decoder.decode() {
-            let (result, hangup) = commands::handle_input(value, &mut connection);
-            writer.write(&result.encode());
-            writer.flush();
+            let (result, hangup) = commands::handle_input(value, &connection_mutex);
+            writer.write(&result.encode()).unwrap();
+            writer.flush().unwrap();
 
             if hangup { break; }
         }
