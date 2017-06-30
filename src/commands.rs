@@ -2,8 +2,11 @@ extern crate resp;
 extern crate rusqlite;
 
 use self::resp::{Value};
-use self::rusqlite::{Connection, Error};
+use self::rusqlite::{Connection};
 use std::sync::{Arc, Mutex, MutexGuard};
+use std::cmp;
+
+type CommandResult = Result<Value, String>;
 
 struct Command<'a> {
     name: String,
@@ -14,15 +17,16 @@ struct Command<'a> {
 struct CommandSettings {
     name: &'static str,
     argument_count: i32,
-    //handler: fn(&'a Command<'a>) -> Result<Value, &'static str>
+    //handler: fn(&'a Command<'a>) -> CommandResult
 }
 
-const COMMAND_SETTINGS: [CommandSettings; 5] = [
+const COMMAND_SETTINGS: [CommandSettings; 6] = [
     CommandSettings { name: "LLEN", argument_count: 1 }, //, handler: Command::llen }
     CommandSettings { name: "LPOP", argument_count: 1 },
     CommandSettings { name: "RPOP", argument_count: 1 },
     CommandSettings { name: "LPUSH", argument_count: -2 },
     CommandSettings { name: "RPUSH", argument_count: -2 },
+    CommandSettings { name: "LRANGE", argument_count: 3 },
 ];
 
 pub fn handle_input(ref value: Value, connection_mutex: &Arc<Mutex<Connection>>) -> (Value, bool) {
@@ -87,6 +91,7 @@ impl<'a> Command<'a> {
                         "RPUSH" => self.rpush(),
                         "LPOP" => self.lpop(),
                         "RPOP" => self.rpop(),
+                        "LRANGE" => self.lrange(),
                         _ => unimplemented!(),
                     };
 
@@ -104,32 +109,32 @@ impl<'a> Command<'a> {
         }
     }
 
-    fn llen(&self) -> Result<Value, &'static str> {
+    fn llen(&self) -> CommandResult {
         let key = self.arguments[0];
 
         let connection = self.lock_connection();
-        self.count_list_items(&*connection, key)
+        self.count_list_items_value(&*connection, key)
     }
 
-    fn lpop(&self) -> Result<Value, &'static str> {
+    fn lpop(&self) -> CommandResult {
         self.pop("ASC")
     }
 
-    fn rpop(&self) -> Result<Value, &'static str> {
+    fn rpop(&self) -> CommandResult {
         self.pop("DESC")
     }
 
-    fn lpush(&self) -> Result<Value, &'static str> {
+    fn lpush(&self) -> CommandResult {
         let key = self.arguments[0];
         let value = self.arguments[1];
 
         let connection = self.lock_connection();
         connection.execute("INSERT INTO list_items (key, value, position) SELECT ?1, ?2, coalesce(MIN(position), 0) - 1 FROM list_items WHERE key = ?1", &[key, value]).unwrap();
 
-        self.count_list_items(&*connection, key)
+        self.count_list_items_value(&*connection, key)
     }
 
-    fn rpush(&self) -> Result<Value, &'static str> {
+    fn rpush(&self) -> CommandResult {
         let key = self.arguments[0];
 
         let mut connection = self.lock_connection();
@@ -144,12 +149,47 @@ impl<'a> Command<'a> {
             tx.commit().unwrap();
         }
 
-        self.count_list_items(&*connection, key)
+        self.count_list_items_value(&*connection, key)
+    }
+
+    fn lrange(&self) -> CommandResult {
+        let key = self.arguments[0];
+        let mut start: i64 = self.arguments[1].parse().map_err(|_| "start must be an integer")?;
+        let mut stop: i64 = self.arguments[2].parse().map_err(|_| "stop must be an integer")?;
+
+        let connection = self.lock_connection();
+
+        if start < 0 || stop < -1 {
+            let count = self.count_list_items(&connection, key);
+
+            if start < 0  { start = cmp::max(0, count + start) }
+
+            if stop < -1 {
+                stop = count + stop;
+                if stop < 0 { return Ok(Value::Array(vec![])); }
+            }
+        }
+
+        if stop != -1 && start > stop { return Ok(Value::Array(vec![])); }
+
+        let sql = match (start, stop) {
+            (0, -1) => "".to_string(),
+            (a, -1) => format!("LIMIT -1 OFFSET {}", a),
+            (0, b)  => format!("LIMIT {}", b + 1),
+            (a, b)  => format!("LIMIT {} OFFSET {}", b - a + 1, a),
+        };
+
+        let mut statement = connection.prepare(&format!("SELECT value FROM list_items WHERE key = ?1 ORDER BY position {}", sql)).unwrap();
+        let rows = statement.query_map(&[key], |row| row.get(0)).unwrap();
+        let result: Result<Vec<String>, _> = rows.collect();
+        let values = result.unwrap().iter().map(|value| Value::String(value.clone())).collect();
+
+        Ok(Value::Array(values))
     }
 
     // private
 
-    fn pop(&self, order: &'static str) -> Result<Value, &'static str> {
+    fn pop(&self, order: &'static str) -> CommandResult {
         let key = self.arguments[0];
 
         let connection = self.lock_connection();
@@ -163,7 +203,7 @@ impl<'a> Command<'a> {
                 Ok(Value::Bulk(value))
             }
 
-            Err(Error::QueryReturnedNoRows) => Ok(Value::NullArray),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(Value::NullArray),
 
             Err(e) => Err(e).unwrap()
         }
@@ -173,10 +213,12 @@ impl<'a> Command<'a> {
         (*self.connection_mutex).lock().unwrap()
     }
 
-    fn count_list_items(&self, connection: &Connection, key: &String) -> Result<Value, &'static str> {
+    fn count_list_items(&self, connection: &Connection, key: &String) -> i64 {
         let mut statement = connection.prepare("SELECT COUNT(*) AS c FROM list_items WHERE key = ?1").unwrap();
-        let count = statement.query_row(&[key], |row| row.get(0)).unwrap();
+        statement.query_row(&[key], |row| row.get(0)).unwrap()
+    }
 
-        Ok(Value::Integer(count))
+    fn count_list_items_value(&self, connection: &Connection, key: &String) -> CommandResult {
+        Ok(Value::Integer(self.count_list_items(connection, key)))
     }
 }
