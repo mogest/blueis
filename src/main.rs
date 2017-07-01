@@ -3,15 +3,24 @@ mod commands;
 mod parser;
 extern crate rusqlite;
 
-use std::net::{TcpListener};
+use std::env;
+use std::io::{self, Write};
+use std::net::TcpListener;
 use std::thread;
 use std::sync::{Arc, Mutex};
 use self::rusqlite::Connection;
 
 fn main() {
-    let listener = TcpListener::bind("127.0.0.1:3000").unwrap();
+    let args: Vec<String> = env::args().collect();
 
-    let connection = Connection::open("database.sqlite3").unwrap();
+    if args.len() != 3 {
+        writeln!(io::stderr(), "usage: blueis host:port database.sqlite3").unwrap();
+        std::process::exit(1);
+    }
+
+    let listener = TcpListener::bind(args[1].clone()).unwrap();
+
+    let connection = Connection::open(args[2].clone()).unwrap();
 
     connection.execute("CREATE TABLE list_items (id integer primary key autoincrement, key string, value blob, position integer)", &[]).ok();
     connection.execute("CREATE INDEX list_items_key ON list_items(key, position)", &[]).ok();
@@ -27,8 +36,4 @@ fn main() {
             }
         }
     }
-}
-
-#[cfg(test)]
-mod tests {
 }
