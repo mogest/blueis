@@ -25,7 +25,7 @@ enum Direction {
     Right
 }
 
-const COMMAND_SETTINGS: [CommandSettings; 8] = [
+const COMMAND_SETTINGS: [CommandSettings; 9] = [
     CommandSettings { name: "LLEN", argument_count: 1 }, //, handler: Command::llen }
     CommandSettings { name: "LPOP", argument_count: 1 },
     CommandSettings { name: "RPOP", argument_count: 1 },
@@ -34,6 +34,7 @@ const COMMAND_SETTINGS: [CommandSettings; 8] = [
     CommandSettings { name: "LRANGE", argument_count: 3 },
     CommandSettings { name: "LTRIM", argument_count: 3 },
     CommandSettings { name: "RPOPLPUSH", argument_count: 2 },
+    CommandSettings { name: "LINDEX", argument_count: 2 },
 ];
 
 pub fn handle_input(ref value: Value, connection_mutex: &Arc<Mutex<Connection>>) -> (Value, bool) {
@@ -101,6 +102,7 @@ impl<'a> Command<'a> {
                         "LRANGE" => self.lrange(),
                         "LTRIM" => self.ltrim(),
                         "RPOPLPUSH" => self.rpoplpush(),
+                        "LINDEX" => self.lindex(),
                         _ => unimplemented!(),
                     };
 
@@ -168,7 +170,7 @@ impl<'a> Command<'a> {
 
         let connection = self.lock_connection();
 
-        // LATER : maybe use find_position_boundaries and parse_positions instead of this
+        // LATER : maybe use find_position_boundaries and parse_indexes instead of this
         // this needs only one select rather than two in the case where start and stop >= 0
         // but then it uses order & limit which are probably slower on a huge table
         // investigate performance at a later date
@@ -210,7 +212,7 @@ impl<'a> Command<'a> {
             let connection = self.lock_connection();
 
             let boundaries = self.find_position_boundaries(&*connection, key);
-            let (start_position, stop_position) = self.parse_positions(boundaries, (start, stop));
+            let (start_position, stop_position) = self.parse_indexes(boundaries, (start, stop));
 
             connection.execute("DELETE FROM list_items WHERE key = ?1 AND (position < ?2 OR position > ?3)", &[key, &start_position, &stop_position]).unwrap();
         }
@@ -231,6 +233,24 @@ impl<'a> Command<'a> {
             }
 
             None => Ok(Value::NullArray)
+        }
+    }
+
+    fn lindex(&self) -> CommandResult {
+        let key = self.arguments[0];
+        let index: i64 = self.arguments[1].parse().map_err(|_| "index must be an integer")?;
+
+        let connection = self.lock_connection();
+
+        let boundaries = self.find_position_boundaries(&*connection, key);
+        let position = self.parse_index(boundaries, index);
+
+        let mut statement = connection.prepare("SELECT value FROM list_items WHERE key = ?1 AND position = ?2 LIMIT 1").unwrap();
+
+        match statement.query_row(&[key, &position], |row| row.get(0)) {
+            Ok(data)                                  => Ok(Value::Bulk(data)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(Value::NullArray),
+            Err(e)                                    => panic!(e)
         }
     }
 
@@ -280,18 +300,12 @@ impl<'a> Command<'a> {
         statement.query_row(&[key], |row| (row.get(0), row.get(1))).unwrap()
     }
 
-    fn parse_positions(&self, (first_position, last_position) : (i64, i64), (start, stop): (i64, i64)) -> (i64, i64) {
-        let start_position = match start {
-            position if position < 0 => cmp::max(0, position + last_position + 1),
-            position                 => position + first_position
-        };
+    fn parse_indexes(&self, boundaries: (i64, i64), (start, stop): (i64, i64)) -> (i64, i64) {
+        (self.parse_index(boundaries, start), self.parse_index(boundaries, stop))
+    }
 
-        let stop_position = match stop {
-            position if position < 0 => cmp::max(0, position + last_position + 1),
-            position                 => position + first_position
-        };
-
-        (start_position, stop_position)
+    fn parse_index(&self, (first_position, last_position): (i64, i64), index: i64) -> i64 {
+        if index < 0 { index + last_position + 1 } else { index + first_position }
     }
 
     fn count_list_items(&self, connection: &Connection, key: &String) -> i64 {
