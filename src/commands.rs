@@ -25,12 +25,14 @@ enum Direction {
     Right
 }
 
-const COMMAND_SETTINGS: [CommandSettings; 10] = [
+const COMMAND_SETTINGS: [CommandSettings; 12] = [
     CommandSettings { name: "LLEN", argument_count: 1 }, //, handler: Command::llen }
     CommandSettings { name: "LPOP", argument_count: 1 },
     CommandSettings { name: "RPOP", argument_count: 1 },
     CommandSettings { name: "LPUSH", argument_count: -2 },
+    CommandSettings { name: "LPUSHX", argument_count: -2 },
     CommandSettings { name: "RPUSH", argument_count: -2 },
+    CommandSettings { name: "RPUSHX", argument_count: -2 },
     CommandSettings { name: "LRANGE", argument_count: 3 },
     CommandSettings { name: "LTRIM", argument_count: 3 },
     CommandSettings { name: "RPOPLPUSH", argument_count: 2 },
@@ -97,7 +99,9 @@ impl<'a> Command<'a> {
                     let result = match settings.name {
                         "LLEN" => self.llen(),
                         "LPUSH" => self.lpush(),
+                        "LPUSHX" => self.lpushx(),
                         "RPUSH" => self.rpush(),
+                        "RPUSHX" => self.rpushx(),
                         "LPOP" => self.lpop(),
                         "RPOP" => self.rpop(),
                         "LRANGE" => self.lrange(),
@@ -156,6 +160,20 @@ impl<'a> Command<'a> {
         self.count_list_items_value(&*connection, key)
     }
 
+    fn lpushx(&self) -> CommandResult {
+        let key = self.arguments[0];
+        let mut connection = self.lock_connection();
+
+        if self.count_list_items(&*connection, key) == 0 {
+            Ok(Value::Integer(0))
+        }
+        else {
+            self.push(&mut *connection, key, Direction::Left, self.arguments.iter().skip(1));
+
+            self.count_list_items_value(&*connection, key)
+        }
+    }
+
     fn rpush(&self) -> CommandResult {
         let key = self.arguments[0];
         let mut connection = self.lock_connection();
@@ -163,6 +181,20 @@ impl<'a> Command<'a> {
         self.push(&mut *connection, key, Direction::Right, self.arguments.iter().skip(1));
 
         self.count_list_items_value(&*connection, key)
+    }
+
+    fn rpushx(&self) -> CommandResult {
+        let key = self.arguments[0];
+        let mut connection = self.lock_connection();
+
+        if self.count_list_items(&*connection, key) == 0 {
+            Ok(Value::Integer(0))
+        }
+        else {
+            self.push(&mut *connection, key, Direction::Right, self.arguments.iter().skip(1));
+
+            self.count_list_items_value(&*connection, key)
+        }
     }
 
     fn lrange(&self) -> CommandResult {
