@@ -35,7 +35,7 @@ fn main() {
             Err(_) => {}
             Ok(stream) => {
                 let connection_mutex = connection_mutex.clone();
-                thread::spawn(move || connection::handle_connection(stream, connection_mutex));
+                thread::spawn(move || connection::Connection::new(connection_mutex).run(stream));
             }
         }
     }
