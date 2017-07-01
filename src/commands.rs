@@ -20,6 +20,11 @@ struct CommandSettings {
     //handler: fn(&'a Command<'a>) -> CommandResult
 }
 
+enum Direction {
+    Left,
+    Right
+}
+
 const COMMAND_SETTINGS: [CommandSettings; 6] = [
     CommandSettings { name: "LLEN", argument_count: 1 }, //, handler: Command::llen }
     CommandSettings { name: "LPOP", argument_count: 1 },
@@ -126,28 +131,18 @@ impl<'a> Command<'a> {
 
     fn lpush(&self) -> CommandResult {
         let key = self.arguments[0];
-        let value = self.arguments[1];
+        let mut connection = self.lock_connection();
 
-        let connection = self.lock_connection();
-        connection.execute("INSERT INTO list_items (key, value, position) SELECT ?1, ?2, coalesce(MIN(position), 0) - 1 FROM list_items WHERE key = ?1", &[key, value]).unwrap();
+        self.push(&mut *connection, Direction::Left);
 
         self.count_list_items_value(&*connection, key)
     }
 
     fn rpush(&self) -> CommandResult {
         let key = self.arguments[0];
-
         let mut connection = self.lock_connection();
 
-        {
-            let tx = connection.transaction().unwrap();
-
-            self.arguments.iter().skip(1).map(|value|
-                tx.execute("INSERT INTO list_items (key, value, position) SELECT ?1, ?2, coalesce(MAX(position), 0) + 1 FROM list_items WHERE key = ?1", &[key, *value])
-            ).collect::<Result<Vec<_>, _>>().unwrap();
-
-            tx.commit().unwrap();
-        }
+        self.push(&mut *connection, Direction::Right);
 
         self.count_list_items_value(&*connection, key)
     }
@@ -206,6 +201,25 @@ impl<'a> Command<'a> {
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(Value::NullArray),
 
             Err(e) => Err(e).unwrap()
+        }
+    }
+
+    fn push(&self, connection: &mut Connection, direction: Direction) -> () {
+        let key = self.arguments[0];
+
+        {
+            let tx = connection.transaction().unwrap();
+
+            let next_position_sql = match direction {
+                Direction::Left  => "coalesce(MIN(position), 0) - 1",
+                Direction::Right => "coalesce(MAX(position), 0) + 1"
+            };
+
+            let sql = format!("INSERT INTO list_items (key, value, position) SELECT ?1, ?2, {} FROM list_items WHERE key = ?1", next_position_sql);
+
+            self.arguments.iter().skip(1).map(|value| tx.execute(&sql, &[key, *value])).collect::<Result<Vec<_>, _>>().unwrap();
+
+            tx.commit().unwrap();
         }
     }
 
