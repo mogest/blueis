@@ -11,7 +11,7 @@ type CommandResult = Result<Value, String>;
 pub struct Command<'a> {
     pub name: &'a str,
     pub arguments: Vec<&'a str>,
-    pub connection_mutex: &'a Arc<Mutex<Connection>>
+    pub sqlite_connection_mutex: &'a Arc<Mutex<Connection>>
 }
 
 struct CommandSettings {
@@ -278,7 +278,7 @@ impl<'a> Command<'a> {
      */
 
     fn lock_connection(&self) -> MutexGuard<Connection> {
-        (*self.connection_mutex).lock().unwrap()
+        (*self.sqlite_connection_mutex).lock().unwrap()
     }
 
     fn count_list_items_value(&self, connection: &Connection, key: &str) -> CommandResult {
@@ -360,28 +360,28 @@ mod tests {
         Arc::new(Mutex::new(connection))
     }
 
-    fn add_more_items(connection_mutex: &Arc<Mutex<Connection>>) {
-        let connection = connection_mutex.lock().unwrap();
+    fn add_more_items(sqlite_connection_mutex: &Arc<Mutex<Connection>>) {
+        let connection = sqlite_connection_mutex.lock().unwrap();
         connection.execute("INSERT INTO list_items (key, value, position) VALUES ('test', 'ghi', -6), ('test', 'jkl', -7), ('test', 'mno', -8), ('test', 'pqr', -9), ('single', 'abc', 1)", &[]).unwrap();
     }
 
-    fn make_command<'a>(name: &'static str, arguments: &[&'a str], connection_mutex: &'a Arc<Mutex<Connection>>) -> Command<'a> {
+    fn make_command<'a>(name: &'static str, arguments: &[&'a str], sqlite_connection_mutex: &'a Arc<Mutex<Connection>>) -> Command<'a> {
         Command {
-            name:             name,
-            arguments:        arguments.to_vec(),
-            connection_mutex: connection_mutex
+            name:                    name,
+            arguments:               arguments.to_vec(),
+            sqlite_connection_mutex: sqlite_connection_mutex
         }
     }
 
-    fn run_command<'a>(name: &'static str, arguments: &[&'a str], connection_mutex: &'a Arc<Mutex<Connection>>, expect_hangup: bool) -> Value {
-        let mut command = make_command(name, arguments, connection_mutex);
+    fn run_command<'a>(name: &'static str, arguments: &[&'a str], sqlite_connection_mutex: &'a Arc<Mutex<Connection>>, expect_hangup: bool) -> Value {
+        let mut command = make_command(name, arguments, sqlite_connection_mutex);
         let (value, hangup) = command.execute();
         assert_eq!(hangup, expect_hangup);
         value
     }
 
-    fn list_key(key: &'static str, connection_mutex: &Arc<Mutex<Connection>>) -> Vec<String> {
-        let connection = connection_mutex.lock().unwrap();
+    fn list_key(key: &'static str, sqlite_connection_mutex: &Arc<Mutex<Connection>>) -> Vec<String> {
+        let connection = sqlite_connection_mutex.lock().unwrap();
         let mut statement = connection.prepare("SELECT value FROM list_items WHERE key = ?1 ORDER BY position").unwrap();
         let rows = statement.query_map(&[&key], |row| row.get(0)).unwrap();
         let result: Result<Vec<String>, _> = rows.collect();
