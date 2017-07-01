@@ -7,6 +7,20 @@ store loaded in memory.  blueis stores data in a sqlite3 database.  This makes i
 
 blueis is wildly incomplete, still in development.
 
+## Building it
+
+You'll need Rust installed.
+
+    cargo build
+
+## Running it
+
+If you want it to accept connections from other computers on the typical redis port:
+
+    blueis 0.0.0.0:6379 /path/to/database.sqlite3
+
+If the database doesn't exist, it'll create it.
+
 ## Supported commands
 
  * LINDEX
