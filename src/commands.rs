@@ -25,13 +25,14 @@ enum Direction {
     Right
 }
 
-const COMMAND_SETTINGS: [CommandSettings; 6] = [
+const COMMAND_SETTINGS: [CommandSettings; 7] = [
     CommandSettings { name: "LLEN", argument_count: 1 }, //, handler: Command::llen }
     CommandSettings { name: "LPOP", argument_count: 1 },
     CommandSettings { name: "RPOP", argument_count: 1 },
     CommandSettings { name: "LPUSH", argument_count: -2 },
     CommandSettings { name: "RPUSH", argument_count: -2 },
     CommandSettings { name: "LRANGE", argument_count: 3 },
+    CommandSettings { name: "LTRIM", argument_count: 3 },
 ];
 
 pub fn handle_input(ref value: Value, connection_mutex: &Arc<Mutex<Connection>>) -> (Value, bool) {
@@ -97,6 +98,7 @@ impl<'a> Command<'a> {
                         "LPOP" => self.lpop(),
                         "RPOP" => self.rpop(),
                         "LRANGE" => self.lrange(),
+                        "LTRIM" => self.ltrim(),
                         _ => unimplemented!(),
                     };
 
@@ -154,6 +156,11 @@ impl<'a> Command<'a> {
 
         let connection = self.lock_connection();
 
+        // LATER : maybe use find_position_boundaries and parse_positions instead of this
+        // this needs only one select rather than two in the case where start and stop >= 0
+        // but then it uses order & limit which are probably slower on a huge table
+        // investigate performance at a later date
+
         if start < 0 || stop < -1 {
             let count = self.count_list_items(&connection, key);
 
@@ -180,6 +187,23 @@ impl<'a> Command<'a> {
         let values = result.unwrap().iter().map(|value| Value::String(value.clone())).collect();
 
         Ok(Value::Array(values))
+    }
+
+    fn ltrim(&self) -> CommandResult {
+        let key = self.arguments[0];
+        let start: i64 = self.arguments[1].parse().map_err(|_| "start must be an integer")?;
+        let stop: i64 = self.arguments[2].parse().map_err(|_| "stop must be an integer")?;
+
+        if start != 0 || stop != -1 {
+            let connection = self.lock_connection();
+
+            let boundaries = self.find_position_boundaries(&*connection, key);
+            let (start_position, stop_position) = self.parse_positions(boundaries, (start, stop));
+
+            connection.execute("DELETE FROM list_items WHERE key = ?1 AND (position < ?2 OR position > ?3)", &[key, &start_position, &stop_position]).unwrap();
+        }
+
+        Ok(Value::String("OK".to_string()))
     }
 
     // private
@@ -225,6 +249,25 @@ impl<'a> Command<'a> {
 
     fn lock_connection(&self) -> MutexGuard<Connection> {
         (*self.connection_mutex).lock().unwrap()
+    }
+
+    fn find_position_boundaries(&self, connection: &Connection, key: &String) -> (i64, i64) {
+        let mut statement = connection.prepare("SELECT MIN(position), MAX(position) AS c FROM list_items WHERE key = ?1").unwrap();
+        statement.query_row(&[key], |row| (row.get(0), row.get(1))).unwrap()
+    }
+
+    fn parse_positions(&self, (first_position, last_position) : (i64, i64), (start, stop): (i64, i64)) -> (i64, i64) {
+        let start_position = match start {
+            position if position < 0 => cmp::max(0, position + last_position + 1),
+            position                 => position + first_position
+        };
+
+        let stop_position = match stop {
+            position if position < 0 => cmp::max(0, position + last_position + 1),
+            position                 => position + first_position
+        };
+
+        (start_position, stop_position)
     }
 
     fn count_list_items(&self, connection: &Connection, key: &String) -> i64 {
