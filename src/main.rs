@@ -1,5 +1,6 @@
 mod connection;
 mod commands;
+mod parser;
 extern crate rusqlite;
 
 use std::net::{TcpListener};
