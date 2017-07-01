@@ -42,8 +42,6 @@ const COMMAND_SETTINGS: [CommandSettings; 12] = [
 
 impl<'a> Command<'a> {
     pub fn handle_command(&mut self) -> (Value, bool) {
-        print!("command {}\n", self.name);
-
         match self.name.to_string().to_uppercase().as_str() {
             "QUIT" => (Value::String("OK".to_string()), true),
             _      => (self.handle_nonterminal_command(), false)
