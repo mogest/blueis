@@ -60,22 +60,27 @@ impl<'a> Command<'a> {
         let settings = all.iter().find(|settings| settings.name == self.name);
 
         match settings {
+            None => Value::Error("ERR unsupported".to_string()),
+
             Some(settings) => {
-                if self.valid_argument_count(settings) {
+                if !self.valid_argument_count(settings) {
+                    Value::Error("ERR wrong number of arguments".to_string())
+                }
+                else {
                     let result = match settings.name {
-                        "LLEN" => self.llen(),
-                        "LPUSH" => self.lpush(),
-                        "LPUSHX" => self.lpushx(),
-                        "RPUSH" => self.rpush(),
-                        "RPUSHX" => self.rpushx(),
-                        "LPOP" => self.lpop(),
-                        "RPOP" => self.rpop(),
-                        "LRANGE" => self.lrange(),
-                        "LTRIM" => self.ltrim(),
+                        "LLEN"      => self.llen(),
+                        "LPUSH"     => self.lpush(),
+                        "LPUSHX"    => self.lpushx(),
+                        "RPUSH"     => self.rpush(),
+                        "RPUSHX"    => self.rpushx(),
+                        "LPOP"      => self.lpop(),
+                        "RPOP"      => self.rpop(),
+                        "LRANGE"    => self.lrange(),
+                        "LTRIM"     => self.ltrim(),
                         "RPOPLPUSH" => self.rpoplpush(),
-                        "LINDEX" => self.lindex(),
-                        "LSET" => self.lset(),
-                        _ => unimplemented!(),
+                        "LINDEX"    => self.lindex(),
+                        "LSET"      => self.lset(),
+                        _           => unimplemented!(),
                     };
 
                     match result {
@@ -83,12 +88,7 @@ impl<'a> Command<'a> {
                         Err(error) => Value::Error(format!("ERR {}", error))
                     }
                 }
-                else {
-                    Value::Error("ERR wrong number of arguments".to_string())
-                }
             }
-
-            None => Value::Error("ERR unsupported".to_string())
         }
     }
 
@@ -102,7 +102,7 @@ impl<'a> Command<'a> {
     fn lpop(&self) -> CommandResult {
         let connection = self.lock_connection();
 
-        match self.pop(&*connection, self.arguments[0], Direction::Left) {
+        match Command::pop(&*connection, self.arguments[0], Direction::Left) {
             Some(data) => Ok(Value::Bulk(data)),
             None       => Ok(Value::NullArray)
         }
@@ -111,7 +111,7 @@ impl<'a> Command<'a> {
     fn rpop(&self) -> CommandResult {
         let connection = self.lock_connection();
 
-        match self.pop(&*connection, self.arguments[0], Direction::Right) {
+        match Command::pop(&*connection, self.arguments[0], Direction::Right) {
             Some(data) => Ok(Value::Bulk(data)),
             None       => Ok(Value::NullArray)
         }
@@ -121,7 +121,7 @@ impl<'a> Command<'a> {
         let key = self.arguments[0];
         let mut connection = self.lock_connection();
 
-        self.push(&mut *connection, key, Direction::Left, self.arguments.iter().skip(1));
+        Command::push(&mut *connection, key, Direction::Left, self.arguments.iter().skip(1));
 
         self.count_list_items_value(&*connection, key)
     }
@@ -130,11 +130,11 @@ impl<'a> Command<'a> {
         let key = self.arguments[0];
         let mut connection = self.lock_connection();
 
-        if self.count_list_items(&*connection, key) == 0 {
+        if Command::count_list_items(&*connection, key) == 0 {
             Ok(Value::Integer(0))
         }
         else {
-            self.push(&mut *connection, key, Direction::Left, self.arguments.iter().skip(1));
+            Command::push(&mut *connection, key, Direction::Left, self.arguments.iter().skip(1));
 
             self.count_list_items_value(&*connection, key)
         }
@@ -144,7 +144,7 @@ impl<'a> Command<'a> {
         let key = self.arguments[0];
         let mut connection = self.lock_connection();
 
-        self.push(&mut *connection, key, Direction::Right, self.arguments.iter().skip(1));
+        Command::push(&mut *connection, key, Direction::Right, self.arguments.iter().skip(1));
 
         self.count_list_items_value(&*connection, key)
     }
@@ -153,11 +153,11 @@ impl<'a> Command<'a> {
         let key = self.arguments[0];
         let mut connection = self.lock_connection();
 
-        if self.count_list_items(&*connection, key) == 0 {
+        if Command::count_list_items(&*connection, key) == 0 {
             Ok(Value::Integer(0))
         }
         else {
-            self.push(&mut *connection, key, Direction::Right, self.arguments.iter().skip(1));
+            Command::push(&mut *connection, key, Direction::Right, self.arguments.iter().skip(1));
 
             self.count_list_items_value(&*connection, key)
         }
@@ -176,7 +176,7 @@ impl<'a> Command<'a> {
         // investigate performance at a later date
 
         if start < 0 || stop < -1 {
-            let count = self.count_list_items(&connection, key);
+            let count = Command::count_list_items(&connection, key);
 
             if start < 0  { start = cmp::max(0, count + start) }
 
@@ -211,8 +211,8 @@ impl<'a> Command<'a> {
         if start != 0 || stop != -1 {
             let connection = self.lock_connection();
 
-            let boundaries = self.find_position_boundaries(&*connection, key);
-            let (start_position, stop_position) = self.parse_indexes(boundaries, (start, stop));
+            let boundaries = Command::find_position_boundaries(&*connection, key);
+            let (start_position, stop_position) = Command::parse_indexes(boundaries, (start, stop));
 
             connection.execute("DELETE FROM list_items WHERE key = ?1 AND (position < ?2 OR position > ?3)", &[key, &start_position, &stop_position]).unwrap();
         }
@@ -226,9 +226,9 @@ impl<'a> Command<'a> {
 
         let mut connection = self.lock_connection();
 
-        match self.pop(&*connection, source, Direction::Right) {
+        match Command::pop(&*connection, source, Direction::Right) {
             Some(data) => {
-                self.push(&mut *connection, destination, Direction::Left, [&data].iter());
+                Command::push(&mut *connection, destination, Direction::Left, [&data].iter());
                 Ok(Value::Bulk(data))
             }
 
@@ -242,8 +242,8 @@ impl<'a> Command<'a> {
 
         let connection = self.lock_connection();
 
-        let boundaries = self.find_position_boundaries(&*connection, key);
-        let position = self.parse_index(boundaries, index);
+        let boundaries = Command::find_position_boundaries(&*connection, key);
+        let position = Command::parse_index(boundaries, index);
 
         let mut statement = connection.prepare("SELECT value FROM list_items WHERE key = ?1 AND position = ?2 LIMIT 1").unwrap();
 
@@ -261,8 +261,8 @@ impl<'a> Command<'a> {
 
         let connection = self.lock_connection();
 
-        let (first_position, last_position) = self.find_position_boundaries(&*connection, key);
-        let position = self.parse_index((first_position, last_position), index);
+        let (first_position, last_position) = Command::find_position_boundaries(&*connection, key);
+        let position = Command::parse_index((first_position, last_position), index);
 
         if position < first_position || position > last_position {
             Err("index out of range".to_string())
@@ -273,9 +273,23 @@ impl<'a> Command<'a> {
         }
     }
 
-    // support methods
+    /*
+     * support methods
+     */
 
-    fn pop(&self, connection: &Connection, key: &String, direction: Direction) -> Option<String> {
+    fn lock_connection(&self) -> MutexGuard<Connection> {
+        (*self.connection_mutex).lock().unwrap()
+    }
+
+    fn count_list_items_value(&self, connection: &Connection, key: &String) -> CommandResult {
+        Ok(Value::Integer(Command::count_list_items(connection, key)))
+    }
+
+    /*
+     * support functions
+     */
+
+    fn pop(connection: &Connection, key: &String, direction: Direction) -> Option<String> {
         let order = match direction { Direction::Left => "ASC", Direction::Right => "DESC" };
         let mut statement = connection.prepare(&format!("SELECT id, value FROM list_items WHERE key = ?1 ORDER BY position {} LIMIT 1", order)).unwrap();
 
@@ -293,7 +307,7 @@ impl<'a> Command<'a> {
         }
     }
 
-    fn push<'b, I>(&self, connection: &mut Connection, key: &String, direction: Direction, iterator: I) -> ()
+    fn push<'b, I>(connection: &mut Connection, key: &String, direction: Direction, iterator: I) -> ()
         where I: Iterator<Item=&'b &'b String>
     {
         let tx = connection.transaction().unwrap();
@@ -310,29 +324,21 @@ impl<'a> Command<'a> {
         tx.commit().unwrap();
     }
 
-    fn lock_connection(&self) -> MutexGuard<Connection> {
-        (*self.connection_mutex).lock().unwrap()
-    }
-
-    fn find_position_boundaries(&self, connection: &Connection, key: &String) -> (i64, i64) {
+    fn find_position_boundaries(connection: &Connection, key: &String) -> (i64, i64) {
         let mut statement = connection.prepare("SELECT MIN(position), MAX(position) AS c FROM list_items WHERE key = ?1").unwrap();
         statement.query_row(&[key], |row| (row.get(0), row.get(1))).unwrap()
     }
 
-    fn parse_indexes(&self, boundaries: (i64, i64), (start, stop): (i64, i64)) -> (i64, i64) {
-        (self.parse_index(boundaries, start), self.parse_index(boundaries, stop))
+    fn parse_indexes(boundaries: (i64, i64), (start, stop): (i64, i64)) -> (i64, i64) {
+        (Command::parse_index(boundaries, start), Command::parse_index(boundaries, stop))
     }
 
-    fn parse_index(&self, (first_position, last_position): (i64, i64), index: i64) -> i64 {
+    fn parse_index((first_position, last_position): (i64, i64), index: i64) -> i64 {
         if index < 0 { index + last_position + 1 } else { index + first_position }
     }
 
-    fn count_list_items(&self, connection: &Connection, key: &String) -> i64 {
+    fn count_list_items(connection: &Connection, key: &String) -> i64 {
         let mut statement = connection.prepare("SELECT COUNT(*) AS c FROM list_items WHERE key = ?1").unwrap();
         statement.query_row(&[key], |row| row.get(0)).unwrap()
-    }
-
-    fn count_list_items_value(&self, connection: &Connection, key: &String) -> CommandResult {
-        Ok(Value::Integer(self.count_list_items(connection, key)))
     }
 }
