@@ -41,7 +41,7 @@ const COMMAND_SETTINGS: [CommandSettings; 12] = [
 ];
 
 impl<'a> Command<'a> {
-    pub fn handle_command(&mut self) -> (Value, bool) {
+    pub fn execute(&mut self) -> (Value, bool) {
         match self.name.to_string().to_uppercase().as_str() {
             "QUIT" => (Value::String("OK".to_string()), true),
             _      => (self.handle_nonterminal_command(), false)
@@ -375,7 +375,7 @@ mod tests {
 
     fn run_command<'a>(name: &'static str, arguments: &[&'a str], connection_mutex: &'a Arc<Mutex<Connection>>, expect_hangup: bool) -> Value {
         let mut command = make_command(name, arguments, connection_mutex);
-        let (value, hangup) = command.handle_command();
+        let (value, hangup) = command.execute();
         assert_eq!(hangup, expect_hangup);
         value
     }

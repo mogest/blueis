@@ -39,7 +39,7 @@ fn handle_input(ref value: Value, connection_mutex: &Arc<Mutex<Connection>>) -> 
                 connection_mutex: connection_mutex
             };
 
-            command.handle_command()
+            command.execute()
         }
 
         Err(error) => (Value::Error(format!("ERR {}", error)), false)
