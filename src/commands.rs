@@ -25,7 +25,7 @@ enum Direction {
     Right
 }
 
-const COMMAND_SETTINGS: [CommandSettings; 7] = [
+const COMMAND_SETTINGS: [CommandSettings; 8] = [
     CommandSettings { name: "LLEN", argument_count: 1 }, //, handler: Command::llen }
     CommandSettings { name: "LPOP", argument_count: 1 },
     CommandSettings { name: "RPOP", argument_count: 1 },
@@ -33,6 +33,7 @@ const COMMAND_SETTINGS: [CommandSettings; 7] = [
     CommandSettings { name: "RPUSH", argument_count: -2 },
     CommandSettings { name: "LRANGE", argument_count: 3 },
     CommandSettings { name: "LTRIM", argument_count: 3 },
+    CommandSettings { name: "RPOPLPUSH", argument_count: 2 },
 ];
 
 pub fn handle_input(ref value: Value, connection_mutex: &Arc<Mutex<Connection>>) -> (Value, bool) {
@@ -99,6 +100,7 @@ impl<'a> Command<'a> {
                         "RPOP" => self.rpop(),
                         "LRANGE" => self.lrange(),
                         "LTRIM" => self.ltrim(),
+                        "RPOPLPUSH" => self.rpoplpush(),
                         _ => unimplemented!(),
                     };
 
@@ -124,18 +126,28 @@ impl<'a> Command<'a> {
     }
 
     fn lpop(&self) -> CommandResult {
-        self.pop("ASC")
+        let connection = self.lock_connection();
+
+        match self.pop(&*connection, self.arguments[0], Direction::Left) {
+            Some(data) => Ok(Value::Bulk(data)),
+            None       => Ok(Value::NullArray)
+        }
     }
 
     fn rpop(&self) -> CommandResult {
-        self.pop("DESC")
+        let connection = self.lock_connection();
+
+        match self.pop(&*connection, self.arguments[0], Direction::Right) {
+            Some(data) => Ok(Value::Bulk(data)),
+            None       => Ok(Value::NullArray)
+        }
     }
 
     fn lpush(&self) -> CommandResult {
         let key = self.arguments[0];
         let mut connection = self.lock_connection();
 
-        self.push(&mut *connection, Direction::Left);
+        self.push(&mut *connection, key, Direction::Left, self.arguments.iter().skip(1));
 
         self.count_list_items_value(&*connection, key)
     }
@@ -144,7 +156,7 @@ impl<'a> Command<'a> {
         let key = self.arguments[0];
         let mut connection = self.lock_connection();
 
-        self.push(&mut *connection, Direction::Right);
+        self.push(&mut *connection, key, Direction::Right, self.arguments.iter().skip(1));
 
         self.count_list_items_value(&*connection, key)
     }
@@ -206,12 +218,26 @@ impl<'a> Command<'a> {
         Ok(Value::String("OK".to_string()))
     }
 
+    fn rpoplpush(&self) -> CommandResult {
+        let source = self.arguments[0];
+        let destination = self.arguments[1];
+
+        let mut connection = self.lock_connection();
+
+        match self.pop(&*connection, source, Direction::Right) {
+            Some(data) => {
+                self.push(&mut *connection, destination, Direction::Left, [&data].iter());
+                Ok(Value::Bulk(data))
+            }
+
+            None => Ok(Value::NullArray)
+        }
+    }
+
     // private
 
-    fn pop(&self, order: &'static str) -> CommandResult {
-        let key = self.arguments[0];
-
-        let connection = self.lock_connection();
+    fn pop(&self, connection: &Connection, key: &String, direction: Direction) -> Option<String> {
+        let order = match direction { Direction::Left => "ASC", Direction::Right => "DESC" };
         let mut statement = connection.prepare(&format!("SELECT id, value FROM list_items WHERE key = ?1 ORDER BY position {} LIMIT 1", order)).unwrap();
 
         match statement.query_row(&[key], |row| (row.get(0), row.get(1))) {
@@ -219,32 +245,30 @@ impl<'a> Command<'a> {
                 let (id, value): (i64, String) = result;
 
                 connection.execute("DELETE FROM list_items WHERE id = ?1", &[&id]).unwrap();
-                Ok(Value::Bulk(value))
+                Some(value)
             }
 
-            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(Value::NullArray),
+            Err(rusqlite::Error::QueryReturnedNoRows) => None,
 
             Err(e) => Err(e).unwrap()
         }
     }
 
-    fn push(&self, connection: &mut Connection, direction: Direction) -> () {
-        let key = self.arguments[0];
+    fn push<'b, I>(&self, connection: &mut Connection, key: &String, direction: Direction, iterator: I) -> ()
+        where I: Iterator<Item=&'b &'b String>
+    {
+        let tx = connection.transaction().unwrap();
 
-        {
-            let tx = connection.transaction().unwrap();
+        let next_position_sql = match direction {
+            Direction::Left  => "coalesce(MIN(position), 0) - 1",
+            Direction::Right => "coalesce(MAX(position), 0) + 1"
+        };
 
-            let next_position_sql = match direction {
-                Direction::Left  => "coalesce(MIN(position), 0) - 1",
-                Direction::Right => "coalesce(MAX(position), 0) + 1"
-            };
+        let sql = format!("INSERT INTO list_items (key, value, position) SELECT ?1, ?2, {} FROM list_items WHERE key = ?1", next_position_sql);
 
-            let sql = format!("INSERT INTO list_items (key, value, position) SELECT ?1, ?2, {} FROM list_items WHERE key = ?1", next_position_sql);
+        iterator.map(|value| tx.execute(&sql, &[key, *value])).collect::<Result<Vec<_>, _>>().unwrap();
 
-            self.arguments.iter().skip(1).map(|value| tx.execute(&sql, &[key, *value])).collect::<Result<Vec<_>, _>>().unwrap();
-
-            tx.commit().unwrap();
-        }
+        tx.commit().unwrap();
     }
 
     fn lock_connection(&self) -> MutexGuard<Connection> {
