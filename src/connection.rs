@@ -29,7 +29,7 @@ pub fn handle_connection(stream: TcpStream, connection_mutex: Arc<Mutex<Connecti
     }
 }
 
-pub fn handle_input(ref value: Value, connection_mutex: &Arc<Mutex<Connection>>) -> (Value, bool) {
+fn handle_input(ref value: Value, connection_mutex: &Arc<Mutex<Connection>>) -> (Value, bool) {
     match parser::parse_command(value, connection_mutex) {
         Ok(mut command) => command.handle_command(),
         Err(error)      => (Value::Error(format!("ERR {}", error)), false)

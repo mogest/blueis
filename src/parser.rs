@@ -33,3 +33,40 @@ fn parse_command_array<'a>(array: &'a Vec<Value>, connection_mutex: &'a Arc<Mute
         connection_mutex: connection_mutex
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::parse_command;
+    use super::rusqlite::Connection;
+    use super::resp::Value;
+    use std::sync::{Arc, Mutex};
+
+    fn conn() -> Arc<Mutex<Connection>> {
+        let connection = Connection::open_in_memory().unwrap();
+        Arc::new(Mutex::new(connection))
+    }
+
+    #[test]
+    fn converts_a_valid_value() {
+        let cm = conn();
+        let value = Value::Array(vec![Value::String("COMMAND".to_string()), Value::String("argument".to_string())]);
+        let result = parse_command(&value, &cm).unwrap();
+
+        assert_eq!(result.name, "COMMAND");
+        assert_eq!(result.arguments, vec!["argument"]);
+    }
+
+    #[test]
+    fn rejects_a_value_that_is_not_an_array() {
+        let cm = conn();
+        let value = Value::String("COMMAND".to_string());
+        assert!(parse_command(&value, &cm).is_err());
+    }
+
+    #[test]
+    fn rejects_a_value_has_non_string_values_in_the_array() {
+        let cm = conn();
+        let value = Value::Array(vec![Value::String("COMMAND".to_string()), Value::Integer(2)]);
+        assert!(parse_command(&value, &cm).is_err());
+    }
+}
