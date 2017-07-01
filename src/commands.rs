@@ -25,7 +25,7 @@ enum Direction {
     Right
 }
 
-const COMMAND_SETTINGS: [CommandSettings; 9] = [
+const COMMAND_SETTINGS: [CommandSettings; 10] = [
     CommandSettings { name: "LLEN", argument_count: 1 }, //, handler: Command::llen }
     CommandSettings { name: "LPOP", argument_count: 1 },
     CommandSettings { name: "RPOP", argument_count: 1 },
@@ -35,6 +35,7 @@ const COMMAND_SETTINGS: [CommandSettings; 9] = [
     CommandSettings { name: "LTRIM", argument_count: 3 },
     CommandSettings { name: "RPOPLPUSH", argument_count: 2 },
     CommandSettings { name: "LINDEX", argument_count: 2 },
+    CommandSettings { name: "LSET", argument_count: 3 },
 ];
 
 pub fn handle_input(ref value: Value, connection_mutex: &Arc<Mutex<Connection>>) -> (Value, bool) {
@@ -103,6 +104,7 @@ impl<'a> Command<'a> {
                         "LTRIM" => self.ltrim(),
                         "RPOPLPUSH" => self.rpoplpush(),
                         "LINDEX" => self.lindex(),
+                        "LSET" => self.lset(),
                         _ => unimplemented!(),
                     };
 
@@ -251,6 +253,25 @@ impl<'a> Command<'a> {
             Ok(data)                                  => Ok(Value::Bulk(data)),
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(Value::NullArray),
             Err(e)                                    => panic!(e)
+        }
+    }
+
+    fn lset(&self) -> CommandResult {
+        let key = self.arguments[0];
+        let index: i64 = self.arguments[1].parse().map_err(|_| "index must be an integer")?;
+        let data = self.arguments[2];
+
+        let connection = self.lock_connection();
+
+        let (first_position, last_position) = self.find_position_boundaries(&*connection, key);
+        let position = self.parse_index((first_position, last_position), index);
+
+        if position < first_position || position > last_position {
+            Err("index out of range".to_string())
+        }
+        else {
+            connection.execute("UPDATE list_items SET value = ?1 WHERE key = ?2 AND position = ?3", &[data, key, &position]).unwrap();
+            Ok(Value::String("OK".to_string()))
         }
     }
 
