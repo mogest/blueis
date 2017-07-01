@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 
 use commands::Command;
 
-pub fn parse_command<'a>(value: &'a Value, connection_mutex: &'a Arc<Mutex<Connection>>) -> Result<Command<'a>, &'static str> {
+pub fn parse_command<'a>(value: &'a Value, connection_mutex: &'a Arc<Mutex<Connection>>) -> Result<Command<'a>, &'a str> {
     if let &Value::Array(ref array) = value {
         parse_command_array(array, connection_mutex)
     }
@@ -16,19 +16,19 @@ pub fn parse_command<'a>(value: &'a Value, connection_mutex: &'a Arc<Mutex<Conne
     }
 }
 
-fn parse_command_array<'a>(array: &'a Vec<Value>, connection_mutex: &'a Arc<Mutex<Connection>>) -> Result<Command<'a>, &'static str> {
+fn parse_command_array<'a>(array: &'a Vec<Value>, connection_mutex: &'a Arc<Mutex<Connection>>) -> Result<Command<'a>, &'a str> {
     let iter = array.iter().map(|value|
         match *value {
-            Value::String(ref string) | Value::Bulk(ref string) => Ok(string),
+            Value::String(ref string) | Value::Bulk(ref string) => Ok(string.as_str()),
             _ => Err("all arguments should be strings")
         }
     );
 
-    let strings = iter.collect::<Result<Vec<&String>, &'static str>>()?;
+    let strings = iter.collect::<Result<Vec<&str>, &'static str>>()?;
     let (head, tail) = strings.split_at(1);
 
     Ok(Command {
-        name: head[0].to_uppercase(),
+        name: head[0],
         arguments: tail.to_vec(),
         connection_mutex: connection_mutex
     })
