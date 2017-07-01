@@ -28,6 +28,8 @@ fn main() {
 
     let connection_mutex = Arc::new(Mutex::new(connection));
 
+    println!("blueis listening at {}", args[1]);
+
     for stream in listener.incoming() {
         match stream {
             Err(_) => {}

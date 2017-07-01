@@ -7,6 +7,7 @@ use self::resp::{Decoder, Value};
 use self::rusqlite::Connection;
 use std::sync::{Arc, Mutex};
 
+use commands;
 use parser;
 
 pub fn handle_connection(stream: TcpStream, connection_mutex: Arc<Mutex<Connection>>) {
@@ -30,8 +31,17 @@ pub fn handle_connection(stream: TcpStream, connection_mutex: Arc<Mutex<Connecti
 }
 
 fn handle_input(ref value: Value, connection_mutex: &Arc<Mutex<Connection>>) -> (Value, bool) {
-    match parser::parse_command(value, connection_mutex) {
-        Ok(mut command) => command.handle_command(),
-        Err(error)      => (Value::Error(format!("ERR {}", error)), false)
+    match parser::parse_command(value) {
+        Ok((name, arguments)) => {
+            let mut command = commands::Command {
+                name: name,
+                arguments: arguments,
+                connection_mutex: connection_mutex
+            };
+
+            command.handle_command()
+        }
+
+        Err(error) => (Value::Error(format!("ERR {}", error)), false)
     }
 }
