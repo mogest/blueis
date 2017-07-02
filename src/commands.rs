@@ -6,13 +6,14 @@ use self::resp::{Value};
 use self::rusqlite::{Connection};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::sync::mpsc::Sender;
+use std::str;
 use std::cmp;
 
 type CommandResult = Result<Value, String>;
 
 pub struct Command<'a> {
     pub name: &'a str,
-    pub arguments: Vec<&'a str>,
+    pub arguments: Vec<&'a [u8]>,
     pub sqlite_connection_mutex: &'a Arc<Mutex<Connection>>,
     pub command_log_tx: &'a Sender<String>,
 }
@@ -108,20 +109,20 @@ impl<'a> Command<'a> {
     fn write_to_log(&self) {
         let now = time::now_utc().to_timespec();
         let args = self.arguments.iter().map(|argument| Command::quote_string(argument)).collect::<Vec<String>>().join(" ");
-        let log = format!("{}.{:09} {} {}", now.sec, now.nsec, Command::quote_string(self.name), args);
+        let log = format!("{}.{:09} {} {}", now.sec, now.nsec, Command::quote_string(self.name.as_bytes()), args);
 
         self.command_log_tx.send(log).ok();
     }
 
-    fn quote_string(input: &str) -> String {
+    fn quote_string(input: &[u8]) -> String {
         let mut output = String::from("\"");
 
-        for c in input.chars() {
-            match c {
-                '\\'      => output.push_str("\\\\"),
-                '"'       => output.push_str("\\\""),
-                ' '...'~' => output.push(c),
-                _         => output.push_str(format!("\\x{:02x}", c as i32).as_ref())
+        for c in input {
+            match *c {
+                b'\\'       => output.push_str("\\\\"),
+                b'"'        => output.push_str("\\\""),
+                b' '...b'~' => output.push(*c as char),
+                _           => output.push_str(format!("\\x{:02x}", c).as_ref())
             }
         }
 
@@ -140,7 +141,7 @@ impl<'a> Command<'a> {
         let connection = self.lock_connection();
 
         match Command::pop(&*connection, self.arguments[0], Direction::Left) {
-            Some(data) => Ok(Value::Bulk(data)),
+            Some(data) => Ok(Value::BufBulk(data)),
             None       => Ok(Value::NullArray)
         }
     }
@@ -149,7 +150,7 @@ impl<'a> Command<'a> {
         let connection = self.lock_connection();
 
         match Command::pop(&*connection, self.arguments[0], Direction::Right) {
-            Some(data) => Ok(Value::Bulk(data)),
+            Some(data) => Ok(Value::BufBulk(data)),
             None       => Ok(Value::NullArray)
         }
     }
@@ -200,10 +201,17 @@ impl<'a> Command<'a> {
         }
     }
 
+    fn parse_argument_integer(&self, index: usize) -> Result<i64, &str> {
+        str::from_utf8(self.arguments[index])
+            .map_err(|_| "")
+            .and_then(|value| String::from(value).parse::<i64>().map_err(|_| ""))
+            .map_err(|_| "argument must be an integer")
+    }
+
     fn lrange(&self) -> CommandResult {
         let key = self.arguments[0];
-        let mut start: i64 = self.arguments[1].parse().map_err(|_| "start must be an integer")?;
-        let mut stop: i64 = self.arguments[2].parse().map_err(|_| "stop must be an integer")?;
+        let mut start: i64 = self.parse_argument_integer(1)?;
+        let mut stop: i64 = self.parse_argument_integer(2)?;
 
         let connection = self.lock_connection();
 
@@ -234,16 +242,16 @@ impl<'a> Command<'a> {
 
         let mut statement = connection.prepare(&format!("SELECT value FROM list_items WHERE key = ?1 ORDER BY position {}", sql)).unwrap();
         let rows = statement.query_map(&[&key], |row| row.get(0)).unwrap();
-        let result: Result<Vec<String>, _> = rows.collect();
-        let values = result.unwrap().iter().map(|value| Value::Bulk(value.clone())).collect();
+        let result: Result<Vec<Vec<u8>>, _> = rows.collect();
+        let values = result.unwrap().iter().map(|value| Value::BufBulk(value.clone())).collect();
 
         Ok(Value::Array(values))
     }
 
     fn ltrim(&self) -> CommandResult {
         let key = self.arguments[0];
-        let start: i64 = self.arguments[1].parse().map_err(|_| "start must be an integer")?;
-        let stop: i64 = self.arguments[2].parse().map_err(|_| "stop must be an integer")?;
+        let start: i64 = self.parse_argument_integer(1)?;
+        let stop: i64 = self.parse_argument_integer(2)?;
 
         if start != 0 || stop != -1 {
             let connection = self.lock_connection();
@@ -265,8 +273,8 @@ impl<'a> Command<'a> {
 
         match Command::pop(&*connection, source, Direction::Right) {
             Some(data) => {
-                Command::push(&mut *connection, destination, Direction::Left, [data.as_str()].iter());
-                Ok(Value::Bulk(data))
+                Command::push(&mut *connection, destination, Direction::Left, [data.as_slice()].iter());
+                Ok(Value::BufBulk(data))
             }
 
             None => Ok(Value::NullArray)
@@ -275,7 +283,7 @@ impl<'a> Command<'a> {
 
     fn lindex(&self) -> CommandResult {
         let key = self.arguments[0];
-        let index: i64 = self.arguments[1].parse().map_err(|_| "index must be an integer")?;
+        let index: i64 = self.parse_argument_integer(1)?;
 
         let connection = self.lock_connection();
 
@@ -285,7 +293,7 @@ impl<'a> Command<'a> {
         let mut statement = connection.prepare("SELECT value FROM list_items WHERE key = ?1 AND position = ?2 LIMIT 1").unwrap();
 
         match statement.query_row(&[&key, &position], |row| row.get(0)) {
-            Ok(data)                                  => Ok(Value::Bulk(data)),
+            Ok(data)                                  => Ok(Value::BufBulk(data)),
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(Value::NullArray),
             Err(e)                                    => panic!(e)
         }
@@ -293,7 +301,7 @@ impl<'a> Command<'a> {
 
     fn lset(&self) -> CommandResult {
         let key = self.arguments[0];
-        let index: i64 = self.arguments[1].parse().map_err(|_| "index must be an integer")?;
+        let index: i64 = self.parse_argument_integer(1)?;
         let data = self.arguments[2];
 
         let connection = self.lock_connection();
@@ -318,7 +326,7 @@ impl<'a> Command<'a> {
         (*self.sqlite_connection_mutex).lock().unwrap()
     }
 
-    fn count_list_items_value(&self, connection: &Connection, key: &str) -> CommandResult {
+    fn count_list_items_value(&self, connection: &Connection, key: &[u8]) -> CommandResult {
         Ok(Value::Integer(Command::count_list_items(connection, key)))
     }
 
@@ -326,13 +334,13 @@ impl<'a> Command<'a> {
      * support functions
      */
 
-    fn pop(connection: &Connection, key: &str, direction: Direction) -> Option<String> {
+    fn pop(connection: &Connection, key: &[u8], direction: Direction) -> Option<Vec<u8>> {
         let order = match direction { Direction::Left => "ASC", Direction::Right => "DESC" };
         let mut statement = connection.prepare(&format!("SELECT id, value FROM list_items WHERE key = ?1 ORDER BY position {} LIMIT 1", order)).unwrap();
 
         match statement.query_row(&[&key], |row| (row.get(0), row.get(1))) {
             Ok(result) => {
-                let (id, value): (i64, String) = result;
+                let (id, value): (i64, Vec<u8>) = result;
 
                 connection.execute("DELETE FROM list_items WHERE id = ?1", &[&id]).unwrap();
                 Some(value)
@@ -344,8 +352,8 @@ impl<'a> Command<'a> {
         }
     }
 
-    fn push<'b, I>(connection: &mut Connection, key: &str, direction: Direction, iterator: I) -> ()
-        where I: Iterator<Item=&'b &'b str>
+    fn push<'b, I>(connection: &mut Connection, key: &[u8], direction: Direction, iterator: I) -> ()
+        where I: Iterator<Item=&'b &'b [u8]>
     {
         let tx = connection.transaction().unwrap();
 
@@ -361,7 +369,7 @@ impl<'a> Command<'a> {
         tx.commit().unwrap();
     }
 
-    fn find_position_boundaries(connection: &Connection, key: &str) -> (i64, i64) {
+    fn find_position_boundaries(connection: &Connection, key: &[u8]) -> (i64, i64) {
         let mut statement = connection.prepare("SELECT MIN(position), MAX(position) AS c FROM list_items WHERE key = ?1").unwrap();
         statement.query_row(&[&key], |row| (row.get(0), row.get(1))).unwrap()
     }
@@ -374,7 +382,7 @@ impl<'a> Command<'a> {
         if index < 0 { index + last_position + 1 } else { index + first_position }
     }
 
-    fn count_list_items(connection: &Connection, key: &str) -> i64 {
+    fn count_list_items(connection: &Connection, key: &[u8]) -> i64 {
         let mut statement = connection.prepare("SELECT COUNT(*) AS c FROM list_items WHERE key = ?1").unwrap();
         statement.query_row(&[&key], |row| row.get(0)).unwrap()
     }

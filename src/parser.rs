@@ -2,8 +2,9 @@ extern crate resp;
 extern crate rusqlite;
 
 use self::resp::{Value};
+use std::str;
 
-type ParserResult<'a> = Result<(&'a str, Vec<&'a str>), &'a str>;
+type ParserResult<'a> = Result<(&'a str, Vec<&'a [u8]>), &'a str>;
 
 pub fn parse_command<'a>(value: &'a Value) -> ParserResult<'a> {
     if let &Value::Array(ref array) = value {
@@ -17,15 +18,18 @@ pub fn parse_command<'a>(value: &'a Value) -> ParserResult<'a> {
 fn parse_command_array<'a>(array: &'a Vec<Value>) -> ParserResult<'a> {
     let iter = array.iter().map(|value|
         match *value {
-            Value::String(ref string) | Value::Bulk(ref string) => Ok(string.as_str()),
+            Value::String(ref string) => Ok(string.as_bytes()),
+            Value::BufBulk(ref string) => Ok(string.as_slice()),
             _ => Err("all arguments should be strings")
         }
     );
 
-    let strings = iter.collect::<Result<Vec<&str>, &'static str>>()?;
+    let strings = iter.collect::<Result<Vec<&[u8]>, &'static str>>()?;
     let (head, tail) = strings.split_at(1);
 
-    Ok((head[0], tail.to_vec()))
+    str::from_utf8(head[0])
+        .map(|command| (command, tail.to_vec()))
+        .map_err(|_| "invalid command name")
 }
 
 #[cfg(test)]

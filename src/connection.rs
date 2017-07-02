@@ -31,7 +31,7 @@ impl Connection {
     pub fn run(&self, stream: TcpStream) {
         let reader = BufReader::new(&stream);
         let mut writer = BufWriter::new(&stream);
-        let mut decoder = Decoder::new(reader);
+        let mut decoder = Decoder::with_buf_bulk(reader);
 
         loop {
             match decoder.decode() {

@@ -68,6 +68,6 @@ fn set_up_tables(connection: &Connection) {
         Err(e) => panic!(e)
     }
 
-    connection.execute("CREATE TABLE list_items (id integer primary key autoincrement, key string, value blob, position integer)", &[]).ok();
+    connection.execute("CREATE TABLE list_items (id integer primary key autoincrement, key blob, value blob, position integer)", &[]).ok();
     connection.execute("CREATE INDEX list_items_key ON list_items(key, position)", &[]).ok();
 }
