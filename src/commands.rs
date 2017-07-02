@@ -7,7 +7,6 @@ use self::rusqlite::{Connection};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::sync::mpsc::Sender;
 use std::str;
-use std::cmp;
 
 type CommandResult = Result<Value, String>;
 
@@ -210,39 +209,38 @@ impl<'a> Command<'a> {
 
     fn lrange(&self) -> CommandResult {
         let key = self.arguments[0];
-        let mut start: i64 = self.parse_argument_integer(1)?;
-        let mut stop: i64 = self.parse_argument_integer(2)?;
+        let start: i64 = self.parse_argument_integer(1)?;
+        let stop: i64 = self.parse_argument_integer(2)?;
 
         let connection = self.lock_connection();
 
-        // LATER : maybe use find_position_boundaries and parse_indexes instead of this
-        // this needs only one select rather than two in the case where start and stop >= 0
-        // but then it uses order & limit which are probably slower on a huge table
-        // investigate performance at a later date
-
-        if start < 0 || stop < -1 {
-            let count = Command::count_list_items(&connection, key);
-
-            if start < 0  { start = cmp::max(0, count + start) }
-
-            if stop < -1 {
-                stop = count + stop;
-                if stop < 0 { return Ok(Value::Array(vec![])); }
+        let result: Result<Vec<Vec<u8>>, _> = match (start, stop) {
+            (0, -1) => {
+                let mut statement = connection.prepare("SELECT value FROM list_items WHERE key = ?1 ORDER BY position").unwrap();
+                let rows = statement.query_map(&[&key], |row| row.get(0)).unwrap();
+                rows.collect()
             }
-        }
 
-        if stop != -1 && start > stop { return Ok(Value::Array(vec![])); }
+            (0, s) if s >= 0 => {
+                let mut statement = connection.prepare("SELECT value FROM list_items WHERE key = ?1 ORDER BY position LIMIT ?2").unwrap();
+                let rows = statement.query_map(&[&key, &(stop + 1)], |row| row.get(0)).unwrap();
+                rows.collect()
+            }
 
-        let sql = match (start, stop) {
-            (0, -1) => "".to_string(),
-            (a, -1) => format!("LIMIT -1 OFFSET {}", a),
-            (0, b)  => format!("LIMIT {}", b + 1),
-            (a, b)  => format!("LIMIT {} OFFSET {}", b - a + 1, a),
+            _ => {
+                let boundaries = Command::find_position_boundaries(&*connection, key);
+                let (start_position, stop_position) = Command::parse_indexes(boundaries, (start, stop));
+
+                if start_position > stop_position {
+                    return Ok(Value::Array(vec![]));
+                }
+
+                let mut statement = connection.prepare("SELECT value FROM list_items WHERE key = ?1 AND position BETWEEN ?2 AND ?3 ORDER BY position").unwrap();
+                let rows = statement.query_map(&[&key, &start_position, &stop_position], |row| row.get(0)).unwrap();
+                rows.collect()
+            }
         };
 
-        let mut statement = connection.prepare(&format!("SELECT value FROM list_items WHERE key = ?1 ORDER BY position {}", sql)).unwrap();
-        let rows = statement.query_map(&[&key], |row| row.get(0)).unwrap();
-        let result: Result<Vec<Vec<u8>>, _> = rows.collect();
         let values = result.unwrap().iter().map(|value| Value::BufBulk(value.clone())).collect();
 
         Ok(Value::Array(values))
