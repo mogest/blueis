@@ -1,7 +1,9 @@
+extern crate rusqlite;
+
 mod connection;
 mod commands;
 mod parser;
-extern crate rusqlite;
+mod monitor;
 
 use std::env;
 use std::io::{self, Write};
@@ -28,6 +30,8 @@ fn main() {
 
     let connection_mutex = Arc::new(Mutex::new(connection));
 
+    let (monitor_bus, notify_tx) = monitor::start_monitor();
+
     println!("blueis listening at {}", args[1]);
 
     for stream in listener.incoming() {
@@ -35,7 +39,12 @@ fn main() {
             Err(_) => {}
             Ok(stream) => {
                 let connection_mutex = connection_mutex.clone();
-                thread::spawn(move || connection::Connection::new(connection_mutex).run(stream));
+                let local_monitor_bus = monitor_bus.clone();
+                let local_notify_tx = notify_tx.clone();
+
+                thread::spawn(move ||
+                  connection::Connection::new(connection_mutex, local_monitor_bus, local_notify_tx).run(stream)
+                );
             }
         }
     }

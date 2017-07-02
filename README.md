@@ -23,6 +23,8 @@ If the database doesn't exist, it'll create it.
 
 ## Supported commands
 
+### List commands
+
  * LINDEX
  * LLEN
  * LPOP
@@ -31,8 +33,12 @@ If the database doesn't exist, it'll create it.
  * LRANGE
  * LSET
  * LTRIM
- * QUIT
  * RPOP
  * RPOPLPUSH
  * RPUSH
  * RPUSHX
+
+### Other commands
+
+ * MONITOR
+ * QUIT
