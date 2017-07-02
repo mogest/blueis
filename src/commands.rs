@@ -142,7 +142,7 @@ impl<'a> Command<'a> {
 
         match Command::pop(&*connection, self.arguments[0], Direction::Left) {
             Some(data) => Ok(Value::BufBulk(data)),
-            None       => Ok(Value::NullArray)
+            None       => Ok(Value::Null)
         }
     }
 
@@ -151,7 +151,7 @@ impl<'a> Command<'a> {
 
         match Command::pop(&*connection, self.arguments[0], Direction::Right) {
             Some(data) => Ok(Value::BufBulk(data)),
-            None       => Ok(Value::NullArray)
+            None       => Ok(Value::Null)
         }
     }
 
@@ -277,7 +277,7 @@ impl<'a> Command<'a> {
                 Ok(Value::BufBulk(data))
             }
 
-            None => Ok(Value::NullArray)
+            None => Ok(Value::Null)
         }
     }
 
@@ -294,7 +294,7 @@ impl<'a> Command<'a> {
 
         match statement.query_row(&[&key, &position], |row| row.get(0)) {
             Ok(data)                                  => Ok(Value::BufBulk(data)),
-            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(Value::NullArray),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(Value::Null),
             Err(e)                                    => panic!(e)
         }
     }
@@ -396,26 +396,27 @@ mod tests {
     use super::resp::Value;
     use std::sync::{Arc, Mutex};
     use std::sync::mpsc::{self, Sender};
+    use std::str;
 
     fn make_connection() -> Arc<Mutex<Connection>> {
         let connection = Connection::open("test.sqlite3").unwrap();
         connection.execute("DROP TABLE list_items", &[]).ok();
         connection.execute("CREATE TABLE list_items (id integer primary key autoincrement, key string, value blob, position integer)", &[]).unwrap();
         connection.execute("CREATE INDEX list_items_key ON list_items(key, position)", &[]).unwrap();
-        connection.execute("INSERT INTO list_items (key, value, position) VALUES ('test', 'abc', -4), ('test', 'def', -5)", &[]).unwrap();
+        connection.execute("INSERT INTO list_items (key, value, position) VALUES (X'74657374', X'616263', -4), (X'74657374', X'646566', -5)", &[]).unwrap();
 
         Arc::new(Mutex::new(connection))
     }
 
     fn add_more_items(sqlite_connection_mutex: &Arc<Mutex<Connection>>) {
         let connection = sqlite_connection_mutex.lock().unwrap();
-        connection.execute("INSERT INTO list_items (key, value, position) VALUES ('test', 'ghi', -6), ('test', 'jkl', -7), ('test', 'mno', -8), ('test', 'pqr', -9), ('single', 'abc', 1)", &[]).unwrap();
+        connection.execute("INSERT INTO list_items (key, value, position) VALUES (X'74657374', X'676869', -6), (X'74657374', X'6A6B6C', -7), (X'74657374', X'6D6E6F', -8), (X'74657374', X'707172', -9), (X'74657375', X'616263', 1)", &[]).unwrap();
     }
 
     fn make_command<'a>(name: &'static str, arguments: &[&'a str], sqlite_connection_mutex: &'a Arc<Mutex<Connection>>, tx: &'a Sender<String>) -> Command<'a> {
         Command {
             name:                    name,
-            arguments:               arguments.to_vec(),
+            arguments:               arguments.to_vec().iter().map(|arg| arg.as_bytes()).collect(),
             sqlite_connection_mutex: sqlite_connection_mutex,
             command_log_tx:          tx
         }
@@ -436,7 +437,7 @@ mod tests {
     fn list_key(key: &'static str, sqlite_connection_mutex: &Arc<Mutex<Connection>>) -> Vec<String> {
         let connection = sqlite_connection_mutex.lock().unwrap();
         let mut statement = connection.prepare("SELECT value FROM list_items WHERE key = ?1 ORDER BY position").unwrap();
-        let rows = statement.query_map(&[&key], |row| row.get(0)).unwrap();
+        let rows = statement.query_map(&[&key.as_bytes()], |row| String::from_utf8(row.get(0)).unwrap()).unwrap();
         let result: Result<Vec<String>, _> = rows.collect();
         result.unwrap()
     }
@@ -460,22 +461,22 @@ mod tests {
     fn lpop() {
         let cm = make_connection();
         let tx = make_tx();
-        assert_eq!(run_command("LPOP", &["test"], &cm, &tx, Action::Continue), Value::Bulk("def".to_string()));
-        assert_eq!(run_command("LPOP", &["test"], &cm, &tx, Action::Continue), Value::Bulk("abc".to_string()));
-        assert_eq!(run_command("LPOP", &["test"], &cm, &tx, Action::Continue), Value::NullArray);
+        assert_eq!(run_command("LPOP", &["test"], &cm, &tx, Action::Continue), Value::BufBulk("def".to_string().into_bytes()));
+        assert_eq!(run_command("LPOP", &["test"], &cm, &tx, Action::Continue), Value::BufBulk("abc".to_string().into_bytes()));
+        assert_eq!(run_command("LPOP", &["test"], &cm, &tx, Action::Continue), Value::Null);
 
-        assert_eq!(run_command("LPOP", &["other"], &cm, &tx, Action::Continue), Value::NullArray);
+        assert_eq!(run_command("LPOP", &["other"], &cm, &tx, Action::Continue), Value::Null);
     }
 
     #[test]
     fn rpop() {
         let cm = make_connection();
         let tx = make_tx();
-        assert_eq!(run_command("RPOP", &["test"], &cm, &tx, Action::Continue), Value::Bulk("abc".to_string()));
-        assert_eq!(run_command("RPOP", &["test"], &cm, &tx, Action::Continue), Value::Bulk("def".to_string()));
-        assert_eq!(run_command("RPOP", &["test"], &cm, &tx, Action::Continue), Value::NullArray);
+        assert_eq!(run_command("RPOP", &["test"], &cm, &tx, Action::Continue), Value::BufBulk("abc".to_string().into_bytes()));
+        assert_eq!(run_command("RPOP", &["test"], &cm, &tx, Action::Continue), Value::BufBulk("def".to_string().into_bytes()));
+        assert_eq!(run_command("RPOP", &["test"], &cm, &tx, Action::Continue), Value::Null);
 
-        assert_eq!(run_command("RPOP", &["other"], &cm, &tx, Action::Continue), Value::NullArray);
+        assert_eq!(run_command("RPOP", &["other"], &cm, &tx, Action::Continue), Value::Null);
     }
 
     #[test]
@@ -526,45 +527,56 @@ mod tests {
         assert_eq!(list_key("other", &cm), vec![] as Vec<String>);
     }
 
+    fn unpack(v: Value) -> Vec<String> {
+        match v {
+            Value::Array(array) => array.iter().map(|bufbulk|
+                match *bufbulk {
+                    Value::BufBulk(ref data) => String::from_utf8(data.clone()).unwrap(),
+                    _ => panic!("invalid")
+                }
+            ).collect(),
+            _ => panic!("invalid")
+        }
+    }
+
+    fn run_lrange<'a>(arguments: &[&'a str], sqlite_connection_mutex: &'a Arc<Mutex<Connection>>, tx: &'a Sender<String>) -> Vec<String> {
+        unpack(run_command("LRANGE", arguments, sqlite_connection_mutex, tx, Action::Continue))
+    }
+
+    struct LrangeCase<'a> {
+        arguments: &'a [&'a str],
+        expected: Vec<&'a str>
+    }
+
     #[test]
     fn lrange() {
         let cm = make_connection();
         let tx = make_tx();
         add_more_items(&cm);
 
-        {
-            let pqr = Value::Bulk("pqr".to_string());
-            let mno = Value::Bulk("mno".to_string());
-            let jkl = Value::Bulk("jkl".to_string());
-            let ghi = Value::Bulk("ghi".to_string());
-            let def = Value::Bulk("def".to_string());
-            let abc = Value::Bulk("abc".to_string());
+        let cases = [
+            LrangeCase { arguments: &["test", "0", "-1"], expected: vec!["pqr", "mno", "jkl", "ghi", "def", "abc"] },
+            LrangeCase { arguments: &["test", "0", "2"], expected: vec!["pqr", "mno", "jkl"] },
+            LrangeCase { arguments: &["test", "3", "-1"], expected: vec!["ghi", "def", "abc"] },
+            LrangeCase { arguments: &["test", "9", "-1"], expected: vec![] as Vec<&str> },
+            LrangeCase { arguments: &["test", "3", "2"], expected: vec![] as Vec<&str> },
+            LrangeCase { arguments: &["test", "-100", "-80"], expected: vec![] as Vec<&str> },
+            LrangeCase { arguments: &["other", "0", "-1"], expected: vec![] as Vec<&str> },
+            LrangeCase { arguments: &["test", "3", "3"], expected: vec!["ghi"] },
+            LrangeCase { arguments: &["test", "3", "4"], expected: vec!["ghi", "def"] },
+            LrangeCase { arguments: &["test", "3", "5"], expected: vec!["ghi", "def", "abc"] },
+            LrangeCase { arguments: &["test", "3", "6"], expected: vec!["ghi", "def", "abc"] },
+            LrangeCase { arguments: &["test", "3", "-3"], expected: vec!["ghi"] },
+            LrangeCase { arguments: &["test", "3", "-2"], expected: vec!["ghi", "def"] },
+            LrangeCase { arguments: &["test", "-3", "3"], expected: vec!["ghi"] },
+            LrangeCase { arguments: &["test", "-3", "4"], expected: vec!["ghi", "def"] },
+            LrangeCase { arguments: &["test", "-3", "-3"], expected: vec!["ghi"] },
+            LrangeCase { arguments: &["test", "-3", "-2"], expected: vec!["ghi", "def"] },
+        ];
 
-            assert_eq!(run_command("LRANGE", &["test", "0", "-1"], &cm, &tx, Action::Continue), Value::Array(vec![pqr, mno, jkl, ghi, def, abc]));
+        for case in cases.iter() {
+            assert_eq!(run_lrange(&case.arguments, &cm, &tx), case.expected);
         }
-
-        assert_eq!(run_command("LRANGE", &["test", "0", "2"], &cm, &tx, Action::Continue), Value::Array(vec![Value::Bulk("pqr".to_string()), Value::Bulk("mno".to_string()), Value::Bulk("jkl".to_string())]));
-
-        assert_eq!(run_command("LRANGE", &["test", "3", "-1"], &cm, &tx, Action::Continue), Value::Array(vec![Value::Bulk("ghi".to_string()), Value::Bulk("def".to_string()), Value::Bulk("abc".to_string())]));
-
-        assert_eq!(run_command("LRANGE", &["test", "9", "-1"], &cm, &tx, Action::Continue), Value::Array(vec![] as Vec<Value>));
-        assert_eq!(run_command("LRANGE", &["test", "3", "2"], &cm, &tx, Action::Continue), Value::Array(vec![] as Vec<Value>));
-        assert_eq!(run_command("LRANGE", &["test", "-100", "-80"], &cm, &tx, Action::Continue), Value::Array(vec![] as Vec<Value>));
-        assert_eq!(run_command("LRANGE", &["other", "0", "-1"], &cm, &tx, Action::Continue), Value::Array(vec![] as Vec<Value>));
-
-        assert_eq!(run_command("LRANGE", &["test", "3", "3"], &cm, &tx, Action::Continue), Value::Array(vec![Value::Bulk("ghi".to_string())]));
-        assert_eq!(run_command("LRANGE", &["test", "3", "4"], &cm, &tx, Action::Continue), Value::Array(vec![Value::Bulk("ghi".to_string()), Value::Bulk("def".to_string())]));
-        assert_eq!(run_command("LRANGE", &["test", "3", "5"], &cm, &tx, Action::Continue), Value::Array(vec![Value::Bulk("ghi".to_string()), Value::Bulk("def".to_string()), Value::Bulk("abc".to_string())]));
-        assert_eq!(run_command("LRANGE", &["test", "3", "6"], &cm, &tx, Action::Continue), Value::Array(vec![Value::Bulk("ghi".to_string()), Value::Bulk("def".to_string()), Value::Bulk("abc".to_string())]));
-
-        assert_eq!(run_command("LRANGE", &["test", "3", "-3"], &cm, &tx, Action::Continue), Value::Array(vec![Value::Bulk("ghi".to_string())]));
-        assert_eq!(run_command("LRANGE", &["test", "3", "-2"], &cm, &tx, Action::Continue), Value::Array(vec![Value::Bulk("ghi".to_string()), Value::Bulk("def".to_string())]));
-
-        assert_eq!(run_command("LRANGE", &["test", "-3", "3"], &cm, &tx, Action::Continue), Value::Array(vec![Value::Bulk("ghi".to_string())]));
-        assert_eq!(run_command("LRANGE", &["test", "-3", "4"], &cm, &tx, Action::Continue), Value::Array(vec![Value::Bulk("ghi".to_string()), Value::Bulk("def".to_string())]));
-
-        assert_eq!(run_command("LRANGE", &["test", "-3", "-3"], &cm, &tx, Action::Continue), Value::Array(vec![Value::Bulk("ghi".to_string())]));
-        assert_eq!(run_command("LRANGE", &["test", "-3", "-2"], &cm, &tx, Action::Continue), Value::Array(vec![Value::Bulk("ghi".to_string()), Value::Bulk("def".to_string())]));
     }
 
     #[test]
@@ -591,15 +603,15 @@ mod tests {
         let cm = make_connection();
         let tx = make_tx();
 
-        assert_eq!(run_command("RPOPLPUSH", &["test", "other"], &cm, &tx, Action::Continue), Value::Bulk("abc".to_string()));
+        assert_eq!(run_command("RPOPLPUSH", &["test", "other"], &cm, &tx, Action::Continue), Value::BufBulk("abc".to_string().into_bytes()));
         assert_eq!(list_key("test", &cm), vec!["def"]);
         assert_eq!(list_key("other", &cm), vec!["abc"]);
 
-        assert_eq!(run_command("RPOPLPUSH", &["test", "other"], &cm, &tx, Action::Continue), Value::Bulk("def".to_string()));
+        assert_eq!(run_command("RPOPLPUSH", &["test", "other"], &cm, &tx, Action::Continue), Value::BufBulk("def".to_string().into_bytes()));
         assert_eq!(list_key("test", &cm), vec![] as Vec<String>);
         assert_eq!(list_key("other", &cm), vec!["def", "abc"]);
 
-        assert_eq!(run_command("RPOPLPUSH", &["test", "other"], &cm, &tx, Action::Continue), Value::NullArray);
+        assert_eq!(run_command("RPOPLPUSH", &["test", "other"], &cm, &tx, Action::Continue), Value::Null);
         assert_eq!(list_key("test", &cm), vec![] as Vec<String>);
         assert_eq!(list_key("other", &cm), vec!["def", "abc"]);
     }
@@ -609,12 +621,12 @@ mod tests {
         let cm = make_connection();
         let tx = make_tx();
 
-        assert_eq!(run_command("LINDEX", &["test", "0"], &cm, &tx, Action::Continue), Value::Bulk("def".to_string()));
-        assert_eq!(run_command("LINDEX", &["test", "1"], &cm, &tx, Action::Continue), Value::Bulk("abc".to_string()));
-        assert_eq!(run_command("LINDEX", &["test", "2"], &cm, &tx, Action::Continue), Value::NullArray);
-        assert_eq!(run_command("LINDEX", &["test", "-1"], &cm, &tx, Action::Continue), Value::Bulk("abc".to_string()));
-        assert_eq!(run_command("LINDEX", &["test", "-2"], &cm, &tx, Action::Continue), Value::Bulk("def".to_string()));
-        assert_eq!(run_command("LINDEX", &["test", "-3"], &cm, &tx, Action::Continue), Value::NullArray);
+        assert_eq!(run_command("LINDEX", &["test", "0"], &cm, &tx, Action::Continue), Value::BufBulk("def".to_string().into_bytes()));
+        assert_eq!(run_command("LINDEX", &["test", "1"], &cm, &tx, Action::Continue), Value::BufBulk("abc".to_string().into_bytes()));
+        assert_eq!(run_command("LINDEX", &["test", "2"], &cm, &tx, Action::Continue), Value::Null);
+        assert_eq!(run_command("LINDEX", &["test", "-1"], &cm, &tx, Action::Continue), Value::BufBulk("abc".to_string().into_bytes()));
+        assert_eq!(run_command("LINDEX", &["test", "-2"], &cm, &tx, Action::Continue), Value::BufBulk("def".to_string().into_bytes()));
+        assert_eq!(run_command("LINDEX", &["test", "-3"], &cm, &tx, Action::Continue), Value::Null);
     }
 
     #[test]

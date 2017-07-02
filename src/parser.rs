@@ -43,7 +43,7 @@ mod tests {
         let (name, arguments) = parse_command(&value).unwrap();
 
         assert_eq!(name, "COMMAND");
-        assert_eq!(arguments, vec!["argument"]);
+        assert_eq!(arguments, vec!["argument".as_bytes()]);
     }
 
     #[test]
