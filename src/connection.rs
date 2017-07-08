@@ -14,9 +14,9 @@ use commands;
 use parser;
 
 pub struct Connection {
-    sqlite_connection_mutex: Arc<Mutex<rusqlite::Connection>>,
+    pub sqlite_connection_mutex: Arc<Mutex<rusqlite::Connection>>,
     monitor_bus: Arc<Mutex<Bus<String>>>,
-    command_log_tx: Sender<String>,
+    pub command_log_tx: Sender<String>,
     pub push_notification: Arc<(Mutex<bool>, Condvar)>,
 }
 
@@ -77,11 +77,9 @@ impl Connection {
         match parser::parse_command(value) {
             Ok((name, arguments)) => {
                 let mut command = commands::Command {
-                    name:                    name,
-                    arguments:               arguments,
-                    sqlite_connection_mutex: &self.sqlite_connection_mutex,
-                    command_log_tx:          &self.command_log_tx,
-                    connection:              &self,
+                    name:       name,
+                    arguments:  arguments,
+                    connection: &self,
                 };
 
                 command.execute()
