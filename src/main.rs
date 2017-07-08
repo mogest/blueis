@@ -9,8 +9,7 @@ use std::env;
 use std::io::{self, Write};
 use std::net::TcpListener;
 use std::thread;
-use std::sync::{Arc, Mutex};
-use self::rusqlite::Connection;
+use std::sync::{Arc, Mutex, Condvar};
 
 const DATABASE_VERSION: &'static str = "1";
 
@@ -24,11 +23,13 @@ fn main() {
 
     let listener = TcpListener::bind(args[1].clone()).unwrap();
 
-    let connection = Connection::open(args[2].clone()).unwrap();
+    let connection = rusqlite::Connection::open(args[2].clone()).unwrap();
 
     set_up_tables(&connection);
 
     let connection_mutex = Arc::new(Mutex::new(connection));
+
+    let push_notification = Arc::new((Mutex::new(false), Condvar::new()));
 
     let (monitor_bus, notify_tx) = monitor::start_monitor();
 
@@ -41,16 +42,17 @@ fn main() {
                 let connection_mutex = connection_mutex.clone();
                 let local_monitor_bus = monitor_bus.clone();
                 let local_notify_tx = notify_tx.clone();
+                let local_push_notification = push_notification.clone();
 
                 thread::spawn(move ||
-                  connection::Connection::new(connection_mutex, local_monitor_bus, local_notify_tx).run(stream)
+                  connection::Connection::new(connection_mutex, local_monitor_bus, local_notify_tx, local_push_notification).run(stream)
                 );
             }
         }
     }
 }
 
-fn set_up_tables(connection: &Connection) {
+fn set_up_tables(connection: &rusqlite::Connection) {
     connection.execute("CREATE TABLE blueis (id integer primary key autoincrement, key string, value blob)", &[]).ok();
     connection.execute("CREATE UNIQUE INDEX blueis_key_index ON blueis(key)", &[]).ok();
 

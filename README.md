@@ -5,6 +5,8 @@ A redis-compatible disk-based database.
 On memory-constrained systems, you might want a store with the simplicity of redis, but without keeping the whole
 store loaded in memory.  blueis stores data in a sqlite3 database.  This makes it much, much slower than redis.
 
+Note that blocking commands (BLPOP, BRPOP) do not guarantee delivery in the order they were called, unlike Redis.
+
 blueis is wildly incomplete, still in development.
 
 ## Building it
@@ -25,6 +27,8 @@ If the database doesn't exist, it'll create it.
 
 ### List commands
 
+ * BLPOP
+ * BRPOP
  * LINDEX
  * LLEN
  * LPOP

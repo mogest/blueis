@@ -2,10 +2,11 @@ extern crate resp;
 extern crate rusqlite;
 extern crate time;
 
-use self::resp::{Value};
-use self::rusqlite::{Connection};
+use connection::Connection;
+use self::resp::Value;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::sync::mpsc::Sender;
+use std::time::{Instant, Duration};
 use std::str;
 
 type CommandResult = Result<Value, String>;
@@ -13,8 +14,9 @@ type CommandResult = Result<Value, String>;
 pub struct Command<'a> {
     pub name: &'a str,
     pub arguments: Vec<&'a [u8]>,
-    pub sqlite_connection_mutex: &'a Arc<Mutex<Connection>>,
+    pub sqlite_connection_mutex: &'a Arc<Mutex<rusqlite::Connection>>,
     pub command_log_tx: &'a Sender<String>,
+    pub connection: &'a Connection,
 }
 
 struct CommandSettings {
@@ -35,7 +37,7 @@ enum Direction {
     Right
 }
 
-const COMMAND_SETTINGS: [CommandSettings; 12] = [
+const COMMAND_SETTINGS: [CommandSettings; 14] = [
     CommandSettings { name: "LLEN", argument_count: 1 }, //, handler: Command::llen }
     CommandSettings { name: "LPOP", argument_count: 1 },
     CommandSettings { name: "RPOP", argument_count: 1 },
@@ -48,6 +50,8 @@ const COMMAND_SETTINGS: [CommandSettings; 12] = [
     CommandSettings { name: "RPOPLPUSH", argument_count: 2 },
     CommandSettings { name: "LINDEX", argument_count: 2 },
     CommandSettings { name: "LSET", argument_count: 3 },
+    CommandSettings { name: "BLPOP", argument_count: -2 },
+    CommandSettings { name: "BRPOP", argument_count: -2 },
 ];
 
 impl<'a> Command<'a> {
@@ -93,6 +97,8 @@ impl<'a> Command<'a> {
                         "RPOPLPUSH" => self.rpoplpush(),
                         "LINDEX"    => self.lindex(),
                         "LSET"      => self.lset(),
+                        "BLPOP"     => self.blpop(),
+                        "BRPOP"     => self.brpop(),
                         _           => unimplemented!(),
                     };
 
@@ -139,7 +145,7 @@ impl<'a> Command<'a> {
     fn lpop(&self) -> CommandResult {
         let connection = self.lock_connection();
 
-        match Command::pop(&*connection, self.arguments[0], Direction::Left) {
+        match Command::pop(&*connection, self.arguments[0], &Direction::Left) {
             Some(data) => Ok(Value::BufBulk(data)),
             None       => Ok(Value::Null)
         }
@@ -148,7 +154,7 @@ impl<'a> Command<'a> {
     fn rpop(&self) -> CommandResult {
         let connection = self.lock_connection();
 
-        match Command::pop(&*connection, self.arguments[0], Direction::Right) {
+        match Command::pop(&*connection, self.arguments[0], &Direction::Right) {
             Some(data) => Ok(Value::BufBulk(data)),
             None       => Ok(Value::Null)
         }
@@ -159,6 +165,7 @@ impl<'a> Command<'a> {
         let mut connection = self.lock_connection();
 
         Command::push(&mut *connection, key, Direction::Left, self.arguments.iter().skip(1));
+        self.notify_push();
 
         self.count_list_items_value(&*connection, key)
     }
@@ -172,6 +179,7 @@ impl<'a> Command<'a> {
         }
         else {
             Command::push(&mut *connection, key, Direction::Left, self.arguments.iter().skip(1));
+            self.notify_push();
 
             self.count_list_items_value(&*connection, key)
         }
@@ -182,6 +190,7 @@ impl<'a> Command<'a> {
         let mut connection = self.lock_connection();
 
         Command::push(&mut *connection, key, Direction::Right, self.arguments.iter().skip(1));
+        self.notify_push();
 
         self.count_list_items_value(&*connection, key)
     }
@@ -195,6 +204,7 @@ impl<'a> Command<'a> {
         }
         else {
             Command::push(&mut *connection, key, Direction::Right, self.arguments.iter().skip(1));
+            self.notify_push();
 
             self.count_list_items_value(&*connection, key)
         }
@@ -269,9 +279,10 @@ impl<'a> Command<'a> {
 
         let mut connection = self.lock_connection();
 
-        match Command::pop(&*connection, source, Direction::Right) {
+        match Command::pop(&*connection, source, &Direction::Right) {
             Some(data) => {
                 Command::push(&mut *connection, destination, Direction::Left, [data.as_slice()].iter());
+                self.notify_push();
                 Ok(Value::BufBulk(data))
             }
 
@@ -316,24 +327,75 @@ impl<'a> Command<'a> {
         }
     }
 
+    fn blpop(&self) -> CommandResult {
+        self.blocking_pop(Direction::Left)
+    }
+
+    fn brpop(&self) -> CommandResult {
+        self.blocking_pop(Direction::Right)
+    }
+
     /*
      * support methods
      */
 
-    fn lock_connection(&self) -> MutexGuard<Connection> {
+    fn blocking_pop(&self, direction: Direction) -> CommandResult {
+        let timeout = self.parse_argument_integer(self.arguments.len() - 1)?;
+        let (_, keys) = self.arguments.split_last().unwrap();
+
+        if timeout < 0 {
+            return Err("timeout is negative".to_owned());
+        }
+
+        let start_instant = Instant::now();
+        let duration = Duration::new(timeout as u64, 0);
+
+        while timeout == 0 || start_instant.elapsed() < duration {
+            {
+                let connection = self.lock_connection();
+
+                for key in keys {
+                    if let Some(data) = Command::pop(&*connection, key, &direction) {
+                        return Ok(Value::Array(vec![Value::BufBulk(key.to_vec()), Value::BufBulk(data)]));
+                    }
+                }
+            }
+
+            let &(ref lock, ref cvar) = &*self.connection.push_notification;
+            let guard = lock.lock().unwrap();
+
+            if timeout == 0 {
+                let _ = cvar.wait(guard).unwrap();
+            }
+            else {
+                let elapsed = start_instant.elapsed();
+                if elapsed < duration { cvar.wait_timeout(guard, duration - elapsed).unwrap(); }
+            }
+        }
+
+        Ok(Value::NullArray)
+    }
+
+    fn lock_connection(&self) -> MutexGuard<rusqlite::Connection> {
         (*self.sqlite_connection_mutex).lock().unwrap()
     }
 
-    fn count_list_items_value(&self, connection: &Connection, key: &[u8]) -> CommandResult {
+    fn count_list_items_value(&self, connection: &rusqlite::Connection, key: &[u8]) -> CommandResult {
         Ok(Value::Integer(Command::count_list_items(connection, key)))
+    }
+
+    fn notify_push(&self) {
+        let &(ref lock, ref cvar) = &*self.connection.push_notification;
+        let _guard = lock.lock().unwrap();
+        cvar.notify_all();
     }
 
     /*
      * support functions
      */
 
-    fn pop(connection: &Connection, key: &[u8], direction: Direction) -> Option<Vec<u8>> {
-        let order = match direction { Direction::Left => "ASC", Direction::Right => "DESC" };
+    fn pop(connection: &rusqlite::Connection, key: &[u8], direction: &Direction) -> Option<Vec<u8>> {
+        let order = match direction { &Direction::Left => "ASC", &Direction::Right => "DESC" };
         let mut statement = connection.prepare(&format!("SELECT id, value FROM list_items WHERE key = ?1 ORDER BY position {} LIMIT 1", order)).unwrap();
 
         match statement.query_row(&[&key], |row| (row.get(0), row.get(1))) {
@@ -350,7 +412,7 @@ impl<'a> Command<'a> {
         }
     }
 
-    fn push<'b, I>(connection: &mut Connection, key: &[u8], direction: Direction, iterator: I) -> ()
+    fn push<'b, I>(connection: &mut rusqlite::Connection, key: &[u8], direction: Direction, iterator: I) -> ()
         where I: Iterator<Item=&'b &'b [u8]>
     {
         let tx = connection.transaction().unwrap();
@@ -367,7 +429,7 @@ impl<'a> Command<'a> {
         tx.commit().unwrap();
     }
 
-    fn find_position_boundaries(connection: &Connection, key: &[u8]) -> (i64, i64) {
+    fn find_position_boundaries(connection: &rusqlite::Connection, key: &[u8]) -> (i64, i64) {
         let mut statement = connection.prepare("SELECT MIN(position), MAX(position) AS c FROM list_items WHERE key = ?1").unwrap();
         statement.query_row(&[&key], |row| (row.get(0), row.get(1))).unwrap()
     }
@@ -380,7 +442,7 @@ impl<'a> Command<'a> {
         if index < 0 { index + last_position + 1 } else { index + first_position }
     }
 
-    fn count_list_items(connection: &Connection, key: &[u8]) -> i64 {
+    fn count_list_items(connection: &rusqlite::Connection, key: &[u8]) -> i64 {
         let mut statement = connection.prepare("SELECT COUNT(*) AS c FROM list_items WHERE key = ?1").unwrap();
         statement.query_row(&[&key], |row| row.get(0)).unwrap()
     }
@@ -390,14 +452,15 @@ impl<'a> Command<'a> {
 mod tests {
     use super::Command;
     use super::Action;
-    use super::rusqlite::Connection;
+    use super::rusqlite;
     use super::resp::Value;
+    use connection::Connection;
     use std::sync::{Arc, Mutex};
     use std::sync::mpsc::{self, Sender};
     use std::str;
 
-    fn make_connection() -> Arc<Mutex<Connection>> {
-        let connection = Connection::open("test.sqlite3").unwrap();
+    fn make_connection() -> Arc<Mutex<rusqlite::Connection>> {
+        let connection = rusqlite::Connection::open("test.sqlite3").unwrap();
         connection.execute("DROP TABLE list_items", &[]).ok();
         connection.execute("CREATE TABLE list_items (id integer primary key autoincrement, key string, value blob, position integer)", &[]).unwrap();
         connection.execute("CREATE INDEX list_items_key ON list_items(key, position)", &[]).unwrap();
@@ -406,12 +469,12 @@ mod tests {
         Arc::new(Mutex::new(connection))
     }
 
-    fn add_more_items(sqlite_connection_mutex: &Arc<Mutex<Connection>>) {
+    fn add_more_items(sqlite_connection_mutex: &Arc<Mutex<rusqlite::Connection>>) {
         let connection = sqlite_connection_mutex.lock().unwrap();
         connection.execute("INSERT INTO list_items (key, value, position) VALUES (X'74657374', X'676869', -6), (X'74657374', X'6A6B6C', -7), (X'74657374', X'6D6E6F', -8), (X'74657374', X'707172', -9), (X'74657375', X'616263', 1)", &[]).unwrap();
     }
 
-    fn make_command<'a>(name: &'static str, arguments: &[&'a str], sqlite_connection_mutex: &'a Arc<Mutex<Connection>>, tx: &'a Sender<String>) -> Command<'a> {
+    fn make_command<'a>(name: &'static str, arguments: &[&'a str], sqlite_connection_mutex: &'a Arc<Mutex<rusqlite::Connection>>, tx: &'a Sender<String>) -> Command<'a> {
         Command {
             name:                    name,
             arguments:               arguments.to_vec().iter().map(|arg| arg.as_bytes()).collect(),
@@ -425,14 +488,14 @@ mod tests {
         tx
     }
 
-    fn run_command<'a>(name: &'static str, arguments: &[&'a str], sqlite_connection_mutex: &'a Arc<Mutex<Connection>>, tx: &'a Sender<String>, expect_action: Action) -> Value {
+    fn run_command<'a>(name: &'static str, arguments: &[&'a str], sqlite_connection_mutex: &'a Arc<Mutex<rusqlite::Connection>>, tx: &'a Sender<String>, expect_action: Action) -> Value {
         let mut command = make_command(name, arguments, sqlite_connection_mutex, tx);
         let (value, action) = command.execute();
         assert_eq!(action, expect_action);
         value
     }
 
-    fn list_key(key: &'static str, sqlite_connection_mutex: &Arc<Mutex<Connection>>) -> Vec<String> {
+    fn list_key(key: &'static str, sqlite_connection_mutex: &Arc<Mutex<rusqlite::Connection>>) -> Vec<String> {
         let connection = sqlite_connection_mutex.lock().unwrap();
         let mut statement = connection.prepare("SELECT value FROM list_items WHERE key = ?1 ORDER BY position").unwrap();
         let rows = statement.query_map(&[&key.as_bytes()], |row| String::from_utf8(row.get(0)).unwrap()).unwrap();
@@ -537,7 +600,7 @@ mod tests {
         }
     }
 
-    fn run_lrange<'a>(arguments: &[&'a str], sqlite_connection_mutex: &'a Arc<Mutex<Connection>>, tx: &'a Sender<String>) -> Vec<String> {
+    fn run_lrange<'a>(arguments: &[&'a str], sqlite_connection_mutex: &'a Arc<Mutex<rusqlite::Connection>>, tx: &'a Sender<String>) -> Vec<String> {
         unpack(run_command("LRANGE", arguments, sqlite_connection_mutex, tx, Action::Continue))
     }
 

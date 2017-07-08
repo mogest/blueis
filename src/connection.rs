@@ -6,7 +6,7 @@ extern crate time;
 use std::io::{Write, BufReader, BufWriter};
 use std::net::{TcpStream};
 use self::resp::{Decoder, Value};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Condvar};
 use self::bus::Bus;
 use std::sync::mpsc::Sender;
 
@@ -17,14 +17,16 @@ pub struct Connection {
     sqlite_connection_mutex: Arc<Mutex<rusqlite::Connection>>,
     monitor_bus: Arc<Mutex<Bus<String>>>,
     command_log_tx: Sender<String>,
+    pub push_notification: Arc<(Mutex<bool>, Condvar)>,
 }
 
 impl Connection {
-    pub fn new(sqlite_connection_mutex: Arc<Mutex<rusqlite::Connection>>, monitor_bus: Arc<Mutex<Bus<String>>>, command_log_tx: Sender<String>) -> Connection {
+    pub fn new(sqlite_connection_mutex: Arc<Mutex<rusqlite::Connection>>, monitor_bus: Arc<Mutex<Bus<String>>>, command_log_tx: Sender<String>, push_notification: Arc<(Mutex<bool>, Condvar)>) -> Connection {
         Connection {
             sqlite_connection_mutex: sqlite_connection_mutex,
             monitor_bus: monitor_bus,
             command_log_tx: command_log_tx,
+            push_notification: push_notification,
         }
     }
 
@@ -79,6 +81,7 @@ impl Connection {
                     arguments:               arguments,
                     sqlite_connection_mutex: &self.sqlite_connection_mutex,
                     command_log_tx:          &self.command_log_tx,
+                    connection:              &self,
                 };
 
                 command.execute()
