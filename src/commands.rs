@@ -2,7 +2,7 @@ extern crate resp;
 extern crate rusqlite;
 extern crate time;
 
-use connection::Connection;
+use connection::Connectionable;
 use self::resp::Value;
 use std::sync::MutexGuard;
 use std::time::{Instant, Duration};
@@ -14,7 +14,7 @@ type CommandResult = Result<Value, String>;
 pub struct Command<'a> {
     pub name: &'a str,
     pub arguments: Vec<&'a [u8]>,
-    pub connection: &'a Connection,
+    pub connection: &'a Connectionable,
 }
 
 struct CommandSettings {
@@ -460,7 +460,7 @@ mod tests {
     use super::Action;
     use super::rusqlite;
     use super::resp::Value;
-    use connection::Connection;
+    use connection::{Connection, Connectionable};
     use self::bus::Bus;
     use std::sync::{Arc, Mutex, Condvar};
     use std::sync::mpsc::{self, Sender};

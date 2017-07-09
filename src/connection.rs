@@ -23,6 +23,30 @@ pub struct Connection {
     stream: Option<TcpStream>,
 }
 
+pub trait Connectionable {
+    fn get_command_log_tx(&self) -> &Sender<String>;
+    fn get_push_notification(&self) -> Arc<(Mutex<bool>, Condvar)>;
+    fn get_sqlite_connection_mutex(&self) -> &Arc<Mutex<rusqlite::Connection>>;
+    fn is_stream_alive(&self) -> bool;
+}
+
+impl Connectionable for Connection {
+    fn get_command_log_tx(&self) -> &Sender<String> { &self.command_log_tx }
+    fn get_push_notification(&self) -> Arc<(Mutex<bool>, Condvar)> { self.push_notification.clone() }
+    fn get_sqlite_connection_mutex(&self) -> &Arc<Mutex<rusqlite::Connection>> { &self.sqlite_connection_mutex }
+
+    fn is_stream_alive(&self) -> bool {
+        let fd = self.borrow_stream().as_raw_fd();
+
+        unsafe {
+            let mut pollfd = libc::pollfd { fd: fd, events: libc::POLLIN, revents: 0 };
+            libc::poll(&mut pollfd, 1, 0);
+
+            pollfd.revents & libc::POLLHUP == 0
+        }
+    }
+}
+
 impl Connection {
     pub fn new(sqlite_connection_mutex: Arc<Mutex<rusqlite::Connection>>, monitor_bus: Arc<Mutex<Bus<String>>>, command_log_tx: Sender<String>, push_notification: Arc<(Mutex<bool>, Condvar)>) -> Connection {
         Connection {
@@ -34,25 +58,10 @@ impl Connection {
         }
     }
 
-    pub fn get_command_log_tx(&self) -> &Sender<String> { &self.command_log_tx }
-    pub fn get_push_notification(&self) -> Arc<(Mutex<bool>, Condvar)> { self.push_notification.clone() }
-    pub fn get_sqlite_connection_mutex(&self) -> &Arc<Mutex<rusqlite::Connection>> { &self.sqlite_connection_mutex }
-
     fn borrow_stream(&self) -> &TcpStream {
         match self.stream {
             Some(ref stream) => stream,
             None => panic!()
-        }
-    }
-
-    pub fn is_stream_alive(&self) -> bool {
-        let fd = self.borrow_stream().as_raw_fd();
-
-        unsafe {
-            let mut pollfd = libc::pollfd { fd: fd, events: libc::POLLIN, revents: 0 };
-            libc::poll(&mut pollfd, 1, 0);
-
-            pollfd.revents & libc::POLLHUP == 0
         }
     }
 
@@ -108,7 +117,7 @@ impl Connection {
                 let mut command = commands::Command {
                     name:       name,
                     arguments:  arguments,
-                    connection: &self,
+                    connection: self as &Connectionable,
                 };
 
                 command.execute()
