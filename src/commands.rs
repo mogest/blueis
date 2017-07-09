@@ -114,7 +114,7 @@ impl<'a> Command<'a> {
         let args = self.arguments.iter().map(|argument| Command::quote_string(argument)).collect::<Vec<String>>().join(" ");
         let log = format!("{}.{:09} {} {}", now.sec, now.nsec, Command::quote_string(self.name.as_bytes()), args);
 
-        self.connection.command_log_tx.send(log).ok();
+        self.connection.get_command_log_tx().send(log).ok();
     }
 
     fn quote_string(input: &[u8]) -> String {
@@ -359,7 +359,7 @@ impl<'a> Command<'a> {
                 }
             }
 
-            let &(ref lock, ref cvar) = &*self.connection.push_notification;
+            let &(ref lock, ref cvar) = &*self.connection.get_push_notification();
             let guard = lock.lock().unwrap();
 
             let wait = if timeout == 0 {
@@ -381,7 +381,7 @@ impl<'a> Command<'a> {
     }
 
     fn lock_connection(&self) -> MutexGuard<rusqlite::Connection> {
-        (*self.connection.sqlite_connection_mutex).lock().unwrap()
+        (*self.connection.get_sqlite_connection_mutex()).lock().unwrap()
     }
 
     fn count_list_items_value(&self, connection: &rusqlite::Connection, key: &[u8]) -> CommandResult {
@@ -389,7 +389,7 @@ impl<'a> Command<'a> {
     }
 
     fn notify_push(&self) {
-        let &(ref lock, ref cvar) = &*self.connection.push_notification;
+        let &(ref lock, ref cvar) = &*self.connection.get_push_notification();
         let _guard = lock.lock().unwrap();
         cvar.notify_all();
     }
@@ -483,7 +483,7 @@ mod tests {
     }
 
     fn add_more_items(connection: &Connection) {
-        let connection = connection.sqlite_connection_mutex.lock().unwrap();
+        let connection = connection.get_sqlite_connection_mutex().lock().unwrap();
         connection.execute("INSERT INTO list_items (key, value, position) VALUES (X'74657374', X'676869', -6), (X'74657374', X'6A6B6C', -7), (X'74657374', X'6D6E6F', -8), (X'74657374', X'707172', -9), (X'74657375', X'616263', 1)", &[]).unwrap();
     }
 
@@ -517,7 +517,7 @@ mod tests {
     }
 
     fn list_key(key: &'static str, connection: &Connection) -> Vec<String> {
-        let connection = connection.sqlite_connection_mutex.lock().unwrap();
+        let connection = connection.get_sqlite_connection_mutex().lock().unwrap();
         let mut statement = connection.prepare("SELECT value FROM list_items WHERE key = ?1 ORDER BY position").unwrap();
         let rows = statement.query_map(&[&key.as_bytes()], |row| String::from_utf8(row.get(0)).unwrap()).unwrap();
         let result: Result<Vec<String>, _> = rows.collect();

@@ -16,10 +16,10 @@ use commands;
 use parser;
 
 pub struct Connection {
-    pub sqlite_connection_mutex: Arc<Mutex<rusqlite::Connection>>,
+    sqlite_connection_mutex: Arc<Mutex<rusqlite::Connection>>,
     monitor_bus: Arc<Mutex<Bus<String>>>,
-    pub command_log_tx: Sender<String>,
-    pub push_notification: Arc<(Mutex<bool>, Condvar)>,
+    command_log_tx: Sender<String>,
+    push_notification: Arc<(Mutex<bool>, Condvar)>,
     stream: Option<TcpStream>,
 }
 
@@ -33,6 +33,10 @@ impl Connection {
             stream: None,
         }
     }
+
+    pub fn get_command_log_tx(&self) -> &Sender<String> { &self.command_log_tx }
+    pub fn get_push_notification(&self) -> Arc<(Mutex<bool>, Condvar)> { self.push_notification.clone() }
+    pub fn get_sqlite_connection_mutex(&self) -> &Arc<Mutex<rusqlite::Connection>> { &self.sqlite_connection_mutex }
 
     fn borrow_stream(&self) -> &TcpStream {
         match self.stream {
