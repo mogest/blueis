@@ -460,63 +460,78 @@ mod tests {
     use super::Action;
     use super::rusqlite;
     use super::resp::Value;
-    use connection::{Connection, Connectionable};
-    use self::bus::Bus;
+    use connection::Connectionable;
     use std::sync::{Arc, Mutex, Condvar};
     use std::sync::mpsc::{self, Sender};
     use std::time::Instant;
     use std::str;
 
-    fn make_sqlite_connection_mutex() -> Arc<Mutex<rusqlite::Connection>> {
-        let connection = rusqlite::Connection::open("test.sqlite3").unwrap();
-        connection.execute("DROP TABLE list_items", &[]).ok();
-        connection.execute("CREATE TABLE list_items (id integer primary key autoincrement, key string, value blob, position integer)", &[]).unwrap();
-        connection.execute("CREATE INDEX list_items_key ON list_items(key, position)", &[]).unwrap();
-        connection.execute("INSERT INTO list_items (key, value, position) VALUES (X'74657374', X'616263', -4), (X'74657374', X'646566', -5)", &[]).unwrap();
-
-        Arc::new(Mutex::new(connection))
+    struct FakeConnection {
+        sqlite_connection_mutex: Arc<Mutex<rusqlite::Connection>>,
+        command_log_tx: Sender<String>,
+        push_notification: Arc<(Mutex<bool>, Condvar)>,
     }
 
-    fn make_tx() -> Sender<String> {
-        let (tx, _rx) = mpsc::channel();
-        tx
+    impl Connectionable for FakeConnection {
+        fn get_command_log_tx(&self) -> &Sender<String> { &self.command_log_tx }
+        fn get_push_notification(&self) -> Arc<(Mutex<bool>, Condvar)> { self.push_notification.clone() }
+        fn get_sqlite_connection_mutex(&self) -> &Arc<Mutex<rusqlite::Connection>> { &self.sqlite_connection_mutex }
+
+        fn is_stream_alive(&self) -> bool { true }
     }
 
-    fn add_more_items(connection: &Connection) {
+    impl FakeConnection {
+        pub fn new() -> FakeConnection {
+            let sqlite_connection_mutex = FakeConnection::make_sqlite_connection_mutex();
+            let tx = FakeConnection::make_tx();
+            let push_notification = Arc::new((Mutex::new(false), Condvar::new()));
+
+            FakeConnection {
+                sqlite_connection_mutex: sqlite_connection_mutex,
+                command_log_tx:          tx,
+                push_notification:       push_notification,
+            }
+        }
+
+        fn make_sqlite_connection_mutex() -> Arc<Mutex<rusqlite::Connection>> {
+            let connection = rusqlite::Connection::open("test.sqlite3").unwrap();
+            connection.execute("DROP TABLE list_items", &[]).ok();
+            connection.execute("CREATE TABLE list_items (id integer primary key autoincrement, key string, value blob, position integer)", &[]).unwrap();
+            connection.execute("CREATE INDEX list_items_key ON list_items(key, position)", &[]).unwrap();
+            connection.execute("INSERT INTO list_items (key, value, position) VALUES (X'74657374', X'616263', -4), (X'74657374', X'646566', -5)", &[]).unwrap();
+
+            Arc::new(Mutex::new(connection))
+        }
+
+        fn make_tx() -> Sender<String> {
+            let (tx, _rx) = mpsc::channel();
+            tx
+        }
+    }
+
+    fn make_connection() -> FakeConnection { FakeConnection::new() }
+
+    fn add_more_items(connection: &FakeConnection) {
         let connection = connection.get_sqlite_connection_mutex().lock().unwrap();
         connection.execute("INSERT INTO list_items (key, value, position) VALUES (X'74657374', X'676869', -6), (X'74657374', X'6A6B6C', -7), (X'74657374', X'6D6E6F', -8), (X'74657374', X'707172', -9), (X'74657375', X'616263', 1)", &[]).unwrap();
     }
 
-    fn make_connection() -> Connection {
-        let sqlite_connection_mutex = make_sqlite_connection_mutex();
-        let tx = make_tx();
-        let push_notification = Arc::new((Mutex::new(false), Condvar::new()));
-        let monitor_bus = Arc::new(Mutex::new(Bus::new(10)));
-
-        Connection::new(
-            sqlite_connection_mutex,
-            monitor_bus,
-            tx,
-            push_notification,
-        )
-    }
-
-    fn make_command<'a>(name: &'static str, arguments: &[&'a str], connection: &'a Connection) -> Command<'a> {
+    fn make_command<'a>(name: &'static str, arguments: &[&'a str], connection: &'a FakeConnection) -> Command<'a> {
         Command {
             name:       name,
             arguments:  arguments.to_vec().iter().map(|arg| arg.as_bytes()).collect(),
-            connection: connection
+            connection: connection as &Connectionable
         }
     }
 
-    fn run_command<'a>(connection: &Connection, name: &'static str, arguments: &[&'a str], expect_action: Action) -> Value {
+    fn run_command<'a>(connection: &FakeConnection, name: &'static str, arguments: &[&'a str], expect_action: Action) -> Value {
         let mut command = make_command(name, arguments, connection);
         let (value, action) = command.execute();
         assert_eq!(action, expect_action);
         value
     }
 
-    fn list_key(key: &'static str, connection: &Connection) -> Vec<String> {
+    fn list_key(key: &'static str, connection: &FakeConnection) -> Vec<String> {
         let connection = connection.get_sqlite_connection_mutex().lock().unwrap();
         let mut statement = connection.prepare("SELECT value FROM list_items WHERE key = ?1 ORDER BY position").unwrap();
         let rows = statement.query_map(&[&key.as_bytes()], |row| String::from_utf8(row.get(0)).unwrap()).unwrap();
@@ -613,7 +628,7 @@ mod tests {
         }
     }
 
-    fn run_lrange<'a>(arguments: &[&'a str], connection: &Connection) -> Vec<String> {
+    fn run_lrange<'a>(arguments: &[&'a str], connection: &FakeConnection) -> Vec<String> {
         unpack(run_command(&connection, "LRANGE", arguments, Action::Continue))
     }
 
