@@ -44,9 +44,9 @@ fn main() {
                 let local_notify_tx = notify_tx.clone();
                 let local_push_notification = push_notification.clone();
 
-                thread::spawn(move ||
-                  connection::Connection::new(connection_mutex, local_monitor_bus, local_notify_tx, local_push_notification).run(stream)
-                );
+                thread::spawn(move || {
+                    connection::Connection::new(connection_mutex, local_monitor_bus, local_notify_tx, local_push_notification).run(stream);
+                });
             }
         }
     }

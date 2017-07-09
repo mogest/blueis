@@ -7,6 +7,7 @@ use self::resp::Value;
 use std::sync::MutexGuard;
 use std::time::{Instant, Duration};
 use std::str;
+use std::cmp;
 
 type CommandResult = Result<Value, String>;
 
@@ -347,7 +348,7 @@ impl<'a> Command<'a> {
         let start_instant = Instant::now();
         let duration = Duration::new(timeout as u64, 0);
 
-        while timeout == 0 || start_instant.elapsed() < duration {
+        while self.connection.is_stream_alive() && (timeout == 0 || start_instant.elapsed() < duration) {
             {
                 let connection = self.lock_connection();
 
@@ -361,13 +362,19 @@ impl<'a> Command<'a> {
             let &(ref lock, ref cvar) = &*self.connection.push_notification;
             let guard = lock.lock().unwrap();
 
-            if timeout == 0 {
-                let _ = cvar.wait(guard).unwrap();
-            }
-            else {
+            let wait = if timeout == 0 {
+                Duration::new(1, 0)
+            } else {
                 let elapsed = start_instant.elapsed();
-                if elapsed < duration { cvar.wait_timeout(guard, duration - elapsed).unwrap(); }
-            }
+                if elapsed < duration {
+                    cmp::min(Duration::new(1, 0), duration - elapsed)
+                }
+                else {
+                    Duration::new(0, 0)
+                }
+            };
+
+            cvar.wait_timeout(guard, wait).unwrap();
         }
 
         Ok(Value::NullArray)

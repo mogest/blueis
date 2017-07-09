@@ -2,6 +2,7 @@ extern crate resp;
 extern crate rusqlite;
 extern crate bus;
 extern crate time;
+extern crate libc;
 
 use std::io::{Write, BufReader, BufWriter};
 use std::net::{TcpStream};
@@ -9,6 +10,7 @@ use self::resp::{Decoder, Value};
 use std::sync::{Arc, Mutex, Condvar};
 use self::bus::Bus;
 use std::sync::mpsc::Sender;
+use std::os::unix::io::AsRawFd;
 
 use commands;
 use parser;
@@ -18,6 +20,7 @@ pub struct Connection {
     monitor_bus: Arc<Mutex<Bus<String>>>,
     pub command_log_tx: Sender<String>,
     pub push_notification: Arc<(Mutex<bool>, Condvar)>,
+    stream: Option<TcpStream>,
 }
 
 impl Connection {
@@ -27,12 +30,34 @@ impl Connection {
             monitor_bus: monitor_bus,
             command_log_tx: command_log_tx,
             push_notification: push_notification,
+            stream: None,
         }
     }
 
-    pub fn run(&self, stream: TcpStream) {
-        let reader = BufReader::new(&stream);
-        let mut writer = BufWriter::new(&stream);
+    fn borrow_stream(&self) -> &TcpStream {
+        match self.stream {
+            Some(ref stream) => stream,
+            None => panic!()
+        }
+    }
+
+    pub fn is_stream_alive(&self) -> bool {
+        let fd = self.borrow_stream().as_raw_fd();
+
+        unsafe {
+            let mut pollfd = libc::pollfd { fd: fd, events: libc::POLLIN, revents: 0 };
+            libc::poll(&mut pollfd, 1, 0);
+
+            pollfd.revents & libc::POLLHUP == 0
+        }
+    }
+
+    pub fn run(&mut self, stream: TcpStream) {
+        self.stream = Some(stream);
+
+        let stream = self.borrow_stream();
+        let reader = BufReader::new(stream);
+        let mut writer = BufWriter::new(stream);
         let mut decoder = Decoder::with_buf_bulk(reader);
 
         loop {
