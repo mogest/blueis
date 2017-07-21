@@ -114,7 +114,7 @@ impl<'a> Command<'a> {
         let args = self.arguments.iter().map(|argument| Command::quote_string(argument)).collect::<Vec<String>>().join(" ");
         let log = format!("{}.{:09} {} {}", now.sec, now.nsec, Command::quote_string(self.name.as_bytes()), args);
 
-        self.connection.get_command_log_tx().send(log).ok();
+        self.connection.send_to_command_log(log);
     }
 
     fn quote_string(input: &[u8]) -> String {
@@ -468,12 +468,11 @@ mod tests {
 
     struct FakeConnection {
         sqlite_connection_mutex: Arc<Mutex<rusqlite::Connection>>,
-        command_log_tx: Sender<String>,
         push_notification: Arc<(Mutex<bool>, Condvar)>,
     }
 
     impl Connectionable for FakeConnection {
-        fn get_command_log_tx(&self) -> &Sender<String> { &self.command_log_tx }
+        fn send_to_command_log(&self, command: &String) {}
         fn get_push_notification(&self) -> Arc<(Mutex<bool>, Condvar)> { self.push_notification.clone() }
         fn get_sqlite_connection_mutex(&self) -> &Arc<Mutex<rusqlite::Connection>> { &self.sqlite_connection_mutex }
 
@@ -488,7 +487,6 @@ mod tests {
 
             FakeConnection {
                 sqlite_connection_mutex: sqlite_connection_mutex,
-                command_log_tx:          tx,
                 push_notification:       push_notification,
             }
         }

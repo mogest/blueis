@@ -1,22 +1,73 @@
-extern crate bus;
+use std::collections::VecDeque;
+use std::sync::{Arc, Mutex, Condvar};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::cell::Cell;
 
-use self::bus::Bus;
-use std::sync::mpsc::{self, Sender};
-use std::sync::{Arc, Mutex};
-use std::thread;
+#[derive(Clone)]
+pub struct Monitor {
+    pub queue: Arc<Mutex<VecDeque<String>>>,
+    pub start: Arc<AtomicUsize>,
+    pub stop: Arc<AtomicUsize>,
+    pub cond: Arc<Condvar>
+}
 
-pub fn start_monitor() -> (Arc<Mutex<Bus<String>>>, Sender<String>) {
-    let (client_tx, monitor_rx) = mpsc::channel();
+pub struct Listener<'a> {
+    monitor: &'a Monitor,
+    position: Cell<usize>
+}
 
-    let monitor = Arc::new(Mutex::new(Bus::new(100)));
+const MAX_QUEUE_LENGTH: usize = 100;
 
-    let local_monitor = monitor.clone();
-
-    thread::spawn(move || {
-        for message in monitor_rx.iter() {
-            local_monitor.lock().unwrap().broadcast(message);
+impl Monitor {
+    pub fn new() -> Monitor {
+        Monitor {
+            queue: Arc::new(Mutex::new(VecDeque::new())),
+            start: Arc::new(AtomicUsize::new(0)),
+            stop: Arc::new(AtomicUsize::new(0)),
+            cond: Arc::new(Condvar::new())
         }
-    });
+    }
 
-    (monitor, client_tx)
+    pub fn send(&self, payload: String) {
+        let mut locked_queue = self.queue.lock().unwrap();
+
+        locked_queue.push_back(payload);
+        if locked_queue.len() > MAX_QUEUE_LENGTH {
+            locked_queue.pop_front();
+            self.start.fetch_add(1, Ordering::Release);
+        }
+
+        self.stop.fetch_add(1, Ordering::Release);
+
+        self.cond.notify_all();
+    }
+
+    pub fn listen(&self) -> Listener {
+        Listener {
+            monitor: self,
+            position: Cell::new(self.stop.load(Ordering::Acquire))
+        }
+    }
+}
+
+impl<'a> Listener<'a> {
+    pub fn recv(&self) -> Option<String> {
+        let mut locked_queue = self.monitor.queue.lock().unwrap();
+
+        while self.position.get() == self.monitor.stop.load(Ordering::Acquire) {
+            locked_queue = self.monitor.cond.wait(locked_queue).unwrap();
+        }
+
+        let start = self.monitor.start.load(Ordering::Acquire);
+
+        if self.position.get() < start {
+            // we missed some, notify caller?
+            self.position.set(start);
+        }
+
+        let payload = locked_queue.get(self.position.get() - start);
+        self.position.set(self.position.get() + 1);
+
+        Some(payload.unwrap().clone())
+    }
 }

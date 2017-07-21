@@ -31,7 +31,7 @@ fn main() {
 
     let push_notification = Arc::new((Mutex::new(false), Condvar::new()));
 
-    let (monitor_bus, notify_tx) = monitor::start_monitor();
+    let monitor = monitor::Monitor::new();
 
     println!("blueis listening at {}", args[1]);
 
@@ -40,12 +40,15 @@ fn main() {
             Err(_) => {}
             Ok(stream) => {
                 let connection_mutex = connection_mutex.clone();
-                let local_monitor_bus = monitor_bus.clone();
-                let local_notify_tx = notify_tx.clone();
                 let local_push_notification = push_notification.clone();
+                let local_monitor = monitor.clone();
 
                 thread::spawn(move || {
-                    connection::Connection::new(connection_mutex, local_monitor_bus, local_notify_tx, local_push_notification).run(stream);
+                    connection::Connection::new(
+                        connection_mutex,
+                        local_monitor,
+                        local_push_notification
+                    ).run(stream);
                 });
             }
         }

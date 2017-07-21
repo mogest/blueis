@@ -1,37 +1,33 @@
 extern crate resp;
 extern crate rusqlite;
-extern crate bus;
 extern crate time;
 extern crate libc;
 
 use std::io::{Write, BufReader, BufWriter};
 use std::net::{TcpStream};
-use self::resp::{Decoder, Value};
 use std::sync::{Arc, Mutex, Condvar};
-use self::bus::Bus;
-use std::sync::mpsc::Sender;
 use std::os::unix::io::AsRawFd;
+use self::resp::{Decoder, Value};
 
 use commands;
 use parser;
+use monitor;
 
 pub struct Connection {
     sqlite_connection_mutex: Arc<Mutex<rusqlite::Connection>>,
-    monitor_bus: Arc<Mutex<Bus<String>>>,
-    command_log_tx: Sender<String>,
+    monitor: monitor::Monitor,
     push_notification: Arc<(Mutex<bool>, Condvar)>,
     stream: Option<TcpStream>,
 }
 
 pub trait Connectionable {
-    fn get_command_log_tx(&self) -> &Sender<String>;
     fn get_push_notification(&self) -> Arc<(Mutex<bool>, Condvar)>;
     fn get_sqlite_connection_mutex(&self) -> &Arc<Mutex<rusqlite::Connection>>;
     fn is_stream_alive(&self) -> bool;
+    fn send_to_command_log(&self, command: String);
 }
 
 impl Connectionable for Connection {
-    fn get_command_log_tx(&self) -> &Sender<String> { &self.command_log_tx }
     fn get_push_notification(&self) -> Arc<(Mutex<bool>, Condvar)> { self.push_notification.clone() }
     fn get_sqlite_connection_mutex(&self) -> &Arc<Mutex<rusqlite::Connection>> { &self.sqlite_connection_mutex }
 
@@ -45,14 +41,17 @@ impl Connectionable for Connection {
             pollfd.revents & libc::POLLHUP == 0
         }
     }
+
+    fn send_to_command_log(&self, command: String) {
+        self.monitor.send(command);
+    }
 }
 
 impl Connection {
-    pub fn new(sqlite_connection_mutex: Arc<Mutex<rusqlite::Connection>>, monitor_bus: Arc<Mutex<Bus<String>>>, command_log_tx: Sender<String>, push_notification: Arc<(Mutex<bool>, Condvar)>) -> Connection {
+    pub fn new(sqlite_connection_mutex: Arc<Mutex<rusqlite::Connection>>, monitor: monitor::Monitor, push_notification: Arc<(Mutex<bool>, Condvar)>) -> Connection {
         Connection {
             sqlite_connection_mutex: sqlite_connection_mutex,
-            monitor_bus: monitor_bus,
-            command_log_tx: command_log_tx,
+            monitor: monitor,
             push_notification: push_notification,
             stream: None,
         }
@@ -96,11 +95,11 @@ impl Connection {
     }
 
     fn run_monitor(&self, mut writer: BufWriter<&TcpStream>) {
-       let mut rx = { self.monitor_bus.lock().unwrap().add_rx() };
+       let listener = self.monitor.listen();
 
        loop {
-           match rx.recv() {
-               Ok(data) => {
+           match listener.recv() {
+               Some(data) => {
                    let value = Value::String(data);
                    writer.write(&value.encode()).unwrap();
                    writer.flush().unwrap();
