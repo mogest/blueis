@@ -20,7 +20,7 @@ pub struct Command<'a> {
 struct CommandSettings {
     name: &'static str,
     argument_count: i32,
-    //handler: fn(&'a Command<'a>) -> CommandResult
+    handler: fn(&Command) -> CommandResult
 }
 
 #[derive(PartialEq, Debug)]
@@ -36,20 +36,20 @@ enum Direction {
 }
 
 const COMMAND_SETTINGS: [CommandSettings; 14] = [
-    CommandSettings { name: "LLEN", argument_count: 1 }, //, handler: Command::llen }
-    CommandSettings { name: "LPOP", argument_count: 1 },
-    CommandSettings { name: "RPOP", argument_count: 1 },
-    CommandSettings { name: "LPUSH", argument_count: -2 },
-    CommandSettings { name: "LPUSHX", argument_count: -2 },
-    CommandSettings { name: "RPUSH", argument_count: -2 },
-    CommandSettings { name: "RPUSHX", argument_count: -2 },
-    CommandSettings { name: "LRANGE", argument_count: 3 },
-    CommandSettings { name: "LTRIM", argument_count: 3 },
-    CommandSettings { name: "RPOPLPUSH", argument_count: 2 },
-    CommandSettings { name: "LINDEX", argument_count: 2 },
-    CommandSettings { name: "LSET", argument_count: 3 },
-    CommandSettings { name: "BLPOP", argument_count: -2 },
-    CommandSettings { name: "BRPOP", argument_count: -2 },
+    CommandSettings { name: "LLEN",      argument_count: 1,  handler: Command::llen },
+    CommandSettings { name: "LPOP",      argument_count: 1,  handler: Command::lpop },
+    CommandSettings { name: "RPOP",      argument_count: 1,  handler: Command::rpop },
+    CommandSettings { name: "LPUSH",     argument_count: -2, handler: Command::lpush },
+    CommandSettings { name: "LPUSHX",    argument_count: -2, handler: Command::lpushx },
+    CommandSettings { name: "RPUSH",     argument_count: -2, handler: Command::rpush },
+    CommandSettings { name: "RPUSHX",    argument_count: -2, handler: Command::rpushx },
+    CommandSettings { name: "LRANGE",    argument_count: 3,  handler: Command::lrange },
+    CommandSettings { name: "LTRIM",     argument_count: 3,  handler: Command::ltrim },
+    CommandSettings { name: "RPOPLPUSH", argument_count: 2,  handler: Command::rpoplpush },
+    CommandSettings { name: "LINDEX",    argument_count: 2,  handler: Command::lindex },
+    CommandSettings { name: "LSET",      argument_count: 3,  handler: Command::lset },
+    CommandSettings { name: "BLPOP",     argument_count: -2, handler: Command::blpop },
+    CommandSettings { name: "BRPOP",     argument_count: -2, handler: Command::brpop },
 ];
 
 impl<'a> Command<'a> {
@@ -82,25 +82,7 @@ impl<'a> Command<'a> {
                 else {
                     self.write_to_log();
 
-                    let result = match settings.name {
-                        "LLEN"      => self.llen(),
-                        "LPUSH"     => self.lpush(),
-                        "LPUSHX"    => self.lpushx(),
-                        "RPUSH"     => self.rpush(),
-                        "RPUSHX"    => self.rpushx(),
-                        "LPOP"      => self.lpop(),
-                        "RPOP"      => self.rpop(),
-                        "LRANGE"    => self.lrange(),
-                        "LTRIM"     => self.ltrim(),
-                        "RPOPLPUSH" => self.rpoplpush(),
-                        "LINDEX"    => self.lindex(),
-                        "LSET"      => self.lset(),
-                        "BLPOP"     => self.blpop(),
-                        "BRPOP"     => self.brpop(),
-                        _           => unimplemented!(),
-                    };
-
-                    match result {
+                    match (settings.handler)(self) {
                         Ok(value)  => value,
                         Err(error) => Value::Error(format!("ERR {}", error))
                     }
@@ -109,118 +91,91 @@ impl<'a> Command<'a> {
         }
     }
 
-    fn write_to_log(&self) {
-        let now = time::now_utc().to_timespec();
-        let args = self.arguments.iter().map(|argument| Command::quote_string(argument)).collect::<Vec<String>>().join(" ");
-        let log = format!("{}.{:09} {} {}", now.sec, now.nsec, Command::quote_string(self.name.as_bytes()), args);
+    /*
+     * command implementations
+     */
 
-        self.connection.send_to_command_log(log);
+    fn llen(command: &Command) -> CommandResult {
+        let key = command.arguments[0];
+
+        let connection = command.lock_connection();
+        command.count_list_items_value(&*connection, key)
     }
 
-    fn quote_string(input: &[u8]) -> String {
-        let mut output = String::from("\"");
+    fn lpop(command: &Command) -> CommandResult {
+        let connection = command.lock_connection();
 
-        for c in input {
-            match *c {
-                b'\\'       => output.push_str("\\\\"),
-                b'"'        => output.push_str("\\\""),
-                b' '...b'~' => output.push(*c as char),
-                _           => output.push_str(format!("\\x{:02x}", c).as_ref())
-            }
-        }
-
-        output.push('"');
-        output
-    }
-
-    fn llen(&self) -> CommandResult {
-        let key = self.arguments[0];
-
-        let connection = self.lock_connection();
-        self.count_list_items_value(&*connection, key)
-    }
-
-    fn lpop(&self) -> CommandResult {
-        let connection = self.lock_connection();
-
-        match Command::pop(&*connection, self.arguments[0], &Direction::Left) {
+        match Command::pop(&*connection, command.arguments[0], &Direction::Left) {
             Some(data) => Ok(Value::BufBulk(data)),
             None       => Ok(Value::Null)
         }
     }
 
-    fn rpop(&self) -> CommandResult {
-        let connection = self.lock_connection();
+    fn rpop(command: &Command) -> CommandResult {
+        let connection = command.lock_connection();
 
-        match Command::pop(&*connection, self.arguments[0], &Direction::Right) {
+        match Command::pop(&*connection, command.arguments[0], &Direction::Right) {
             Some(data) => Ok(Value::BufBulk(data)),
             None       => Ok(Value::Null)
         }
     }
 
-    fn lpush(&self) -> CommandResult {
-        let key = self.arguments[0];
-        let mut connection = self.lock_connection();
+    fn lpush(command: &Command) -> CommandResult {
+        let key = command.arguments[0];
+        let mut connection = command.lock_connection();
 
-        Command::push(&mut *connection, key, Direction::Left, self.arguments.iter().skip(1));
-        self.notify_push();
+        Command::push(&mut *connection, key, Direction::Left, command.arguments.iter().skip(1));
+        command.notify_push();
 
-        self.count_list_items_value(&*connection, key)
+        command.count_list_items_value(&*connection, key)
     }
 
-    fn lpushx(&self) -> CommandResult {
-        let key = self.arguments[0];
-        let mut connection = self.lock_connection();
+    fn lpushx(command: &Command) -> CommandResult {
+        let key = command.arguments[0];
+        let mut connection = command.lock_connection();
 
         if Command::count_list_items(&*connection, key) == 0 {
             Ok(Value::Integer(0))
         }
         else {
-            Command::push(&mut *connection, key, Direction::Left, self.arguments.iter().skip(1));
-            self.notify_push();
+            Command::push(&mut *connection, key, Direction::Left, command.arguments.iter().skip(1));
+            command.notify_push();
 
-            self.count_list_items_value(&*connection, key)
+            command.count_list_items_value(&*connection, key)
         }
     }
 
-    fn rpush(&self) -> CommandResult {
-        let key = self.arguments[0];
-        let mut connection = self.lock_connection();
+    fn rpush(command: &Command) -> CommandResult {
+        let key = command.arguments[0];
+        let mut connection = command.lock_connection();
 
-        Command::push(&mut *connection, key, Direction::Right, self.arguments.iter().skip(1));
-        self.notify_push();
+        Command::push(&mut *connection, key, Direction::Right, command.arguments.iter().skip(1));
+        command.notify_push();
 
-        self.count_list_items_value(&*connection, key)
+        command.count_list_items_value(&*connection, key)
     }
 
-    fn rpushx(&self) -> CommandResult {
-        let key = self.arguments[0];
-        let mut connection = self.lock_connection();
+    fn rpushx(command: &Command) -> CommandResult {
+        let key = command.arguments[0];
+        let mut connection = command.lock_connection();
 
         if Command::count_list_items(&*connection, key) == 0 {
             Ok(Value::Integer(0))
         }
         else {
-            Command::push(&mut *connection, key, Direction::Right, self.arguments.iter().skip(1));
-            self.notify_push();
+            Command::push(&mut *connection, key, Direction::Right, command.arguments.iter().skip(1));
+            command.notify_push();
 
-            self.count_list_items_value(&*connection, key)
+            command.count_list_items_value(&*connection, key)
         }
     }
 
-    fn parse_argument_integer(&self, index: usize) -> Result<i64, &str> {
-        str::from_utf8(self.arguments[index])
-            .map_err(|_| "")
-            .and_then(|value| String::from(value).parse::<i64>().map_err(|_| ""))
-            .map_err(|_| "argument must be an integer")
-    }
+    fn lrange(command: &Command) -> CommandResult {
+        let key = command.arguments[0];
+        let start: i64 = command.parse_argument_integer(1)?;
+        let stop: i64 = command.parse_argument_integer(2)?;
 
-    fn lrange(&self) -> CommandResult {
-        let key = self.arguments[0];
-        let start: i64 = self.parse_argument_integer(1)?;
-        let stop: i64 = self.parse_argument_integer(2)?;
-
-        let connection = self.lock_connection();
+        let connection = command.lock_connection();
 
         let result: Result<Vec<Vec<u8>>, _> = match (start, stop) {
             (0, -1) => {
@@ -254,13 +209,13 @@ impl<'a> Command<'a> {
         Ok(Value::Array(values))
     }
 
-    fn ltrim(&self) -> CommandResult {
-        let key = self.arguments[0];
-        let start: i64 = self.parse_argument_integer(1)?;
-        let stop: i64 = self.parse_argument_integer(2)?;
+    fn ltrim(command: &Command) -> CommandResult {
+        let key = command.arguments[0];
+        let start: i64 = command.parse_argument_integer(1)?;
+        let stop: i64 = command.parse_argument_integer(2)?;
 
         if start != 0 || stop != -1 {
-            let connection = self.lock_connection();
+            let connection = command.lock_connection();
 
             let boundaries = Command::find_position_boundaries(&*connection, key);
             let (start_position, stop_position) = Command::parse_indexes(boundaries, (start, stop));
@@ -271,16 +226,16 @@ impl<'a> Command<'a> {
         Ok(Value::String("OK".to_string()))
     }
 
-    fn rpoplpush(&self) -> CommandResult {
-        let source = self.arguments[0];
-        let destination = self.arguments[1];
+    fn rpoplpush(command: &Command) -> CommandResult {
+        let source = command.arguments[0];
+        let destination = command.arguments[1];
 
-        let mut connection = self.lock_connection();
+        let mut connection = command.lock_connection();
 
         match Command::pop(&*connection, source, &Direction::Right) {
             Some(data) => {
                 Command::push(&mut *connection, destination, Direction::Left, [data.as_slice()].iter());
-                self.notify_push();
+                command.notify_push();
                 Ok(Value::BufBulk(data))
             }
 
@@ -288,11 +243,11 @@ impl<'a> Command<'a> {
         }
     }
 
-    fn lindex(&self) -> CommandResult {
-        let key = self.arguments[0];
-        let index: i64 = self.parse_argument_integer(1)?;
+    fn lindex(command: &Command) -> CommandResult {
+        let key = command.arguments[0];
+        let index: i64 = command.parse_argument_integer(1)?;
 
-        let connection = self.lock_connection();
+        let connection = command.lock_connection();
 
         let boundaries = Command::find_position_boundaries(&*connection, key);
         let position = Command::parse_index(boundaries, index);
@@ -306,12 +261,12 @@ impl<'a> Command<'a> {
         }
     }
 
-    fn lset(&self) -> CommandResult {
-        let key = self.arguments[0];
-        let index: i64 = self.parse_argument_integer(1)?;
-        let data = self.arguments[2];
+    fn lset(command: &Command) -> CommandResult {
+        let key = command.arguments[0];
+        let index: i64 = command.parse_argument_integer(1)?;
+        let data = command.arguments[2];
 
-        let connection = self.lock_connection();
+        let connection = command.lock_connection();
 
         let (first_position, last_position) = Command::find_position_boundaries(&*connection, key);
         let position = Command::parse_index((first_position, last_position), index);
@@ -325,17 +280,48 @@ impl<'a> Command<'a> {
         }
     }
 
-    fn blpop(&self) -> CommandResult {
-        self.blocking_pop(Direction::Left)
+    fn blpop(command: &Command) -> CommandResult {
+        command.blocking_pop(Direction::Left)
     }
 
-    fn brpop(&self) -> CommandResult {
-        self.blocking_pop(Direction::Right)
+    fn brpop(command: &Command) -> CommandResult {
+        command.blocking_pop(Direction::Right)
     }
 
     /*
      * support methods
      */
+
+    fn write_to_log(&self) {
+        let now = time::now_utc().to_timespec();
+        let args = self.arguments.iter().map(|argument| Command::quote_string(argument)).collect::<Vec<String>>().join(" ");
+        let log = format!("{}.{:09} {} {}", now.sec, now.nsec, Command::quote_string(self.name.as_bytes()), args);
+
+        self.connection.send_to_command_log(log);
+    }
+
+    fn quote_string(input: &[u8]) -> String {
+        let mut output = String::from("\"");
+
+        for c in input {
+            match *c {
+                b'\\'       => output.push_str("\\\\"),
+                b'"'        => output.push_str("\\\""),
+                b' '...b'~' => output.push(*c as char),
+                _           => output.push_str(format!("\\x{:02x}", c).as_ref())
+            }
+        }
+
+        output.push('"');
+        output
+    }
+
+    fn parse_argument_integer(&self, index: usize) -> Result<i64, &str> {
+        str::from_utf8(self.arguments[index])
+            .map_err(|_| "")
+            .and_then(|value| String::from(value).parse::<i64>().map_err(|_| ""))
+            .map_err(|_| "argument must be an integer")
+    }
 
     fn blocking_pop(&self, direction: Direction) -> CommandResult {
         let timeout = self.parse_argument_integer(self.arguments.len() - 1)?;
