@@ -454,15 +454,12 @@ impl<'a> Command<'a> {
 
 #[cfg(test)]
 mod tests {
-    extern crate bus;
-
     use super::Command;
     use super::Action;
     use super::rusqlite;
     use super::resp::Value;
     use connection::Connectionable;
     use std::sync::{Arc, Mutex, Condvar};
-    use std::sync::mpsc::{self, Sender};
     use std::time::Instant;
     use std::str;
 
@@ -472,7 +469,7 @@ mod tests {
     }
 
     impl Connectionable for FakeConnection {
-        fn send_to_command_log(&self, command: &String) {}
+        fn send_to_command_log(&self, _command: String) {}
         fn get_push_notification(&self) -> Arc<(Mutex<bool>, Condvar)> { self.push_notification.clone() }
         fn get_sqlite_connection_mutex(&self) -> &Arc<Mutex<rusqlite::Connection>> { &self.sqlite_connection_mutex }
 
@@ -482,7 +479,6 @@ mod tests {
     impl FakeConnection {
         pub fn new() -> FakeConnection {
             let sqlite_connection_mutex = FakeConnection::make_sqlite_connection_mutex();
-            let tx = FakeConnection::make_tx();
             let push_notification = Arc::new((Mutex::new(false), Condvar::new()));
 
             FakeConnection {
@@ -499,11 +495,6 @@ mod tests {
             connection.execute("INSERT INTO list_items (key, value, position) VALUES (X'74657374', X'616263', -4), (X'74657374', X'646566', -5)", &[]).unwrap();
 
             Arc::new(Mutex::new(connection))
-        }
-
-        fn make_tx() -> Sender<String> {
-            let (tx, _rx) = mpsc::channel();
-            tx
         }
     }
 
