@@ -1,5 +1,7 @@
 # blueis
 
+[![Build Status](https://travis-ci.org/mogest/blueis.svg?branch=master)](https://travis-ci.org/mogest/blueis)
+
 A redis-compatible disk-based database.
 
 On memory-constrained systems, you might want a store with the simplicity of redis, but without keeping the whole
