@@ -76,8 +76,8 @@ impl Connection {
             match decoder.decode() {
                 Ok(value) => {
                     let (result, action) = self.handle_input(value);
-                    writer.write(&result.encode()).unwrap();
-                    writer.flush().unwrap();
+                    if writer.write(&result.encode()).is_err() { break; }
+                    if writer.flush().is_err() { break; }
 
                     match action {
                         commands::Action::HangUp => break,
@@ -101,8 +101,8 @@ impl Connection {
            match listener.recv() {
                Some(data) => {
                    let value = Value::String(data);
-                   writer.write(&value.encode()).unwrap();
-                   writer.flush().unwrap();
+                   if writer.write(&value.encode()).is_err() { break; }
+                   if writer.flush().is_err() { break; }
                }
 
                _ => break
