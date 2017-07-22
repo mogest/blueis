@@ -12,6 +12,7 @@ use std::thread;
 use std::sync::{Arc, Mutex, Condvar};
 
 const DATABASE_VERSION: &'static str = "1";
+const MAX_MONITOR_QUEUE_SIZE: usize = 100;
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -31,7 +32,7 @@ fn main() {
 
     let push_notification = Arc::new((Mutex::new(false), Condvar::new()));
 
-    let monitor = monitor::Monitor::new();
+    let monitor = monitor::Monitor::new(MAX_MONITOR_QUEUE_SIZE);
 
     println!("blueis listening at {}", args[1]);
 

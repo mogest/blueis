@@ -8,7 +8,8 @@ pub struct Monitor {
     pub queue: Arc<Mutex<VecDeque<String>>>,
     pub start: Arc<AtomicUsize>,
     pub stop: Arc<AtomicUsize>,
-    pub cond: Arc<Condvar>
+    pub cond: Arc<Condvar>,
+    max_queue_size: usize
 }
 
 pub struct Listener<'a> {
@@ -16,15 +17,16 @@ pub struct Listener<'a> {
     position: Cell<usize>
 }
 
-const MAX_QUEUE_LENGTH: usize = 100;
-
 impl Monitor {
-    pub fn new() -> Monitor {
+    pub fn new(max_queue_size: usize) -> Monitor {
+        if max_queue_size < 1 { panic!("max_queue_size must be 1 or greater"); }
+
         Monitor {
             queue: Arc::new(Mutex::new(VecDeque::new())),
             start: Arc::new(AtomicUsize::new(0)),
             stop: Arc::new(AtomicUsize::new(0)),
-            cond: Arc::new(Condvar::new())
+            cond: Arc::new(Condvar::new()),
+            max_queue_size: max_queue_size
         }
     }
 
@@ -32,7 +34,7 @@ impl Monitor {
         let mut locked_queue = self.queue.lock().unwrap();
 
         locked_queue.push_back(payload);
-        if locked_queue.len() > MAX_QUEUE_LENGTH {
+        if locked_queue.len() > self.max_queue_size {
             locked_queue.pop_front();
             self.start.fetch_add(1, Ordering::Release);
         }
@@ -79,7 +81,7 @@ mod tests {
 
     #[test]
     fn monitor_acts_as_an_mpmc_queue() {
-        let monitor = Monitor::new();
+        let monitor = Monitor::new(100);
 
         monitor.send("will never be received".to_string());
 
@@ -96,7 +98,7 @@ mod tests {
 
     #[test]
     fn monitor_can_be_shared_with_threads() {
-        let monitor = Monitor::new();
+        let monitor = Monitor::new(100);
         let mut receivers = vec![];
 
         for _ in 0..4 {
@@ -127,7 +129,35 @@ mod tests {
 
     #[test]
     fn nothing_bad_happens_when_you_send_with_no_listeners() {
-        let monitor = Monitor::new();
+        let monitor = Monitor::new(100);
         monitor.send("some payload".to_string());
+    }
+
+    #[test]
+    fn queues_are_correctly_handled_when_they_overflow() {
+        let monitor = Monitor::new(2);
+        let listener = monitor.listen();
+
+        for x in 0..5 {
+            monitor.send(x.to_string());
+            assert_eq!(listener.recv().unwrap(), x.to_string());
+        }
+    }
+
+    #[test]
+    fn listeners_miss_out_on_data_gracefully_if_queue_overflows() {
+        let monitor = Monitor::new(2);
+        let listener = monitor.listen();
+
+        monitor.send("A".to_string());
+        assert_eq!(listener.recv().unwrap(), "A".to_string());
+
+        monitor.send("B".to_string());
+        monitor.send("C".to_string());
+        monitor.send("D".to_string());
+
+        // the listener misses out on "B" because the queue size is only 2 long
+        assert_eq!(listener.recv().unwrap(), "C".to_string());
+        assert_eq!(listener.recv().unwrap(), "D".to_string());
     }
 }
